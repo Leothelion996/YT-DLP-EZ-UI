@@ -1,0 +1,11 @@
+# YT-DLP EZ-UI Requirements
+# Python 3.10+ required
+
+# Core dependencies
+yt-dlp>=2023.12.30
+PyQt6>=6.6.0
+mutagen>=1.47.0
+
+# Optional but recommended
+# ffmpeg is required for audio extraction and merging
+# Install separately: https://ffmpeg.org/download.html
