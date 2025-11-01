@@ -360,8 +360,22 @@ class MainWindow(QMainWindow):
         def on_progress(progress_dict):
             """Handle progress updates from yt-dlp."""
             # Extract playlist information if available
-            playlist_index = progress_dict.get('playlist_index')
-            playlist_count = progress_dict.get('playlist_count')
+            # yt-dlp provides playlist data in info_dict (primary source)
+            info_dict = progress_dict.get('info_dict', {})
+            playlist_index = info_dict.get('playlist_index')
+            playlist_count = info_dict.get('n_entries') or info_dict.get('playlist_count')
+
+            # Fallback to top-level keys (from YtDlpLogger synthetic dict)
+            if not playlist_index:
+                playlist_index = progress_dict.get('playlist_index')
+            if not playlist_count:
+                playlist_count = progress_dict.get('playlist_count')
+
+            # Debug logging when playlist data is missing
+            if not (playlist_index and playlist_count):
+                available_keys = list(progress_dict.keys())
+                info_dict_keys = list(info_dict.keys()) if info_dict else []
+                self.logger.debug(f"Playlist data not found. progress_dict keys: {available_keys}, info_dict keys: {info_dict_keys}")
 
             if playlist_index and playlist_count:
                 # It's a playlist - track total count
@@ -374,9 +388,7 @@ class MainWindow(QMainWindow):
                 status = progress_dict.get('status', '')
 
                 # Try to get video title from multiple possible sources
-                video_title = None
-                if 'info_dict' in progress_dict:
-                    video_title = progress_dict['info_dict'].get('title')
+                video_title = info_dict.get('title') if info_dict else None
                 if not video_title:
                     filename = progress_dict.get('filename', '')
                     if filename:
