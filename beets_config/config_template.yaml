@@ -1,0 +1,96 @@
+# Beets configuration for YT-DLP EZ-UI
+# This is a template - placeholders are replaced at runtime
+# NOTE: Do not hardcode your AcoustID API key here. Loaded securely at runtime.
+
+# Library & storage
+directory: LIBRARY_PATH_PLACEHOLDER
+library: LIBRARY_DB_PLACEHOLDER
+
+# Plugins to enable
+plugins:
+  - chroma         # fingerprinting (Chromaprint -> AcoustID)
+  - fetchart       # download album art
+  - embedart       # embed downloaded art into files
+  - scrub          # clean bad tags before write
+  - fromfilename   # fallback parsing from filename
+  - missing        # list missing tracks / metadata
+  - info           # debugging/info output
+  - replaygain     # optional: compute replaygain
+  - duplicates     # optional: help find duplicates
+
+# Plugin paths (for custom plugins)
+pluginpath:
+  - PLUGIN_PATH_PLACEHOLDER
+
+# Import behavior
+import:
+  copy: yes            # copy source files into the organized library (keeps originals)
+  move: no             # set move: yes if you want to move instead of copy
+  write: yes           # write ID3/Vorbis tags to files
+  autotag: yes         # allow beets to autotag via MB + AcoustID
+  quiet_fallback: skip # skip interactive fallback
+  resume: yes
+  incremental: yes
+  log: IMPORT_LOG_PLACEHOLDER
+
+# Cover art settings
+art_filename: cover.jpg   # save fetched album art as "cover.jpg" in the album folder
+fetchart:
+  cautious: yes
+  sources: coverart itunes amazon albumart
+  minwidth: 400
+  auto: yes
+
+embedart:
+  auto: yes
+  remove_art_file: no
+
+# Acoustic fingerprinting (Chromaprint / AcoustID)
+chroma:
+  auto: yes
+  aggressive: yes
+  force: no              # set to yes if you want fingerprints regenerated each import
+  chunk: 120
+
+# AcoustID API key (replaced at runtime from keyring)
+acoustid:
+  apikey: ACOUSTID_KEY_PLACEHOLDER
+
+# Save embed settings & replaygain
+replaygain:
+  backend: ffmpeg
+  auto: no
+
+# Tag cleaning rules
+scrub:
+  auto: yes
+
+# Matching preferences
+match:
+  preferred:
+    original_year: yes
+  required: year
+  ignored:
+    - missing_tracks
+    - unmatched_tracks
+
+# Path templates:
+# - Default album path: Artist / Album (with MusicBrainz uniqueness) / Track - Title
+# - Single tracks (no album) go to Artist/Singles/Title.ext
+paths:
+  default: $albumartist/$album%aunique{}/$track - $title
+  singleton: $artist/Singles/$title
+  comp: Compilations/$album/$track - $title
+
+# Filename replacements (sanitize for Windows)
+replace:
+  '[\\\/\:\*\?\"\<\>\|]': '_'
+  '[\x00-\x1f]': '_'
+  '[\s]+': ' '
+  '^\.': '_'
+  '[\s]+$': ''
+
+# Misc
+id3v2_utf8: yes
+threaded: yes
+version: 1

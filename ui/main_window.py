@@ -6,6 +6,7 @@ Central application window that orchestrates all UI components.
 import sys
 import logging
 from pathlib import Path
+from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStatusBar, QMessageBox
@@ -26,9 +27,13 @@ from .widgets.options import OptionsWidget
 from .widgets.output_select import OutputSelectWidget
 from .widgets.progress_widget import ProgressWidget
 from .widgets.log_viewer import LogViewer
+from .widgets.beets_options import BeetsOptionsWidget
 
 from core.downloader import DownloadManager
 from core.queue_manager import QueueManager
+from core.beets_manager import BeetsManager
+from core.metadata import MetadataHandler
+from core.acoustid_tagger import AcoustIDTagger
 
 
 class MainWindow(QMainWindow):
@@ -44,6 +49,10 @@ class MainWindow(QMainWindow):
     playlist_progress_signal = pyqtSignal(str)  # playlist progress message
     all_downloads_complete_signal = pyqtSignal(int)  # total count
 
+    # Thread-safe signals for beets processing
+    beets_progress_signal = pyqtSignal(str)  # progress message
+    beets_complete_signal = pyqtSignal(bool, str)  # success, error_msg
+
     def __init__(self):
         """Initialize the main window."""
         super().__init__()
@@ -52,6 +61,11 @@ class MainWindow(QMainWindow):
         self.settings = SettingsManager()
         self.download_manager = DownloadManager()
         self.queue_manager = QueueManager()
+        self.beets_manager = BeetsManager()
+        self.metadata_handler = MetadataHandler()
+
+        # Track downloaded files for post-processing
+        self._downloaded_files = []
 
         # Download state tracking
         self._current_downloads = []
@@ -100,6 +114,10 @@ class MainWindow(QMainWindow):
         # Options widget (format and quality)
         self.options_widget = OptionsWidget(self.settings)
         main_layout.addWidget(self.options_widget)
+
+        # Beets options widget (music tagging)
+        self.beets_options_widget = BeetsOptionsWidget(self.settings, self.beets_manager)
+        main_layout.addWidget(self.beets_options_widget)
 
         # Link input widget
         self.link_input = LinkInputWidget()
@@ -176,12 +194,19 @@ class MainWindow(QMainWindow):
         # Options widget signals
         self.options_widget.format_changed.connect(self._on_format_changed)
 
+        # Beets options widget signals
+        self.beets_options_widget.beets_enabled_changed.connect(self._on_beets_enabled_changed)
+
         # Thread-safe download signals
         self.download_complete_signal.connect(self._on_download_complete_safe)
         self.download_error_signal.connect(self._on_download_error_safe)
         self.download_progress_signal.connect(self._on_download_progress_safe)
         self.playlist_progress_signal.connect(self._on_playlist_progress_safe)
         self.all_downloads_complete_signal.connect(self._on_all_downloads_complete_safe)
+
+        # Thread-safe beets signals
+        self.beets_progress_signal.connect(self._on_beets_progress_safe)
+        self.beets_complete_signal.connect(self._on_beets_complete_safe)
 
         # Progress widget signals
         self.progress_widget.more_info_clicked.connect(self.log_viewer.toggle_visibility)
@@ -391,6 +416,44 @@ class MainWindow(QMainWindow):
         """
         self.logger.info(f"File format changed to: {file_format}")
 
+    def _on_beets_enabled_changed(self, enabled: bool):
+        """
+        Handle beets tagging enable/disable.
+
+        Args:
+            enabled: True if beets is enabled, False otherwise
+        """
+        self.logger.info(f"Beets music tagging {'enabled' if enabled else 'disabled'}")
+
+    def _on_beets_progress_safe(self, message: str):
+        """
+        Handle beets progress update safely in main thread.
+
+        Args:
+            message: Progress message from beets
+        """
+        self.log_viewer.append_log(f"[Beets] {message}")
+
+    def _on_beets_complete_safe(self, success: bool, error_msg: str):
+        """
+        Handle beets completion safely in main thread.
+
+        Args:
+            success: True if processing succeeded
+            error_msg: Error message if failed (empty string if success)
+        """
+        if success:
+            self.log_viewer.append_log("[Beets] Processing complete!")
+            self.status_bar.showMessage("Music tagging complete", 5000)
+        else:
+            self.log_viewer.append_log(f"[Beets] ERROR: {error_msg}")
+            self.status_bar.showMessage("Music tagging failed", 5000)
+            QMessageBox.warning(
+                self,
+                "Beets Processing Failed",
+                f"Music fingerprinting encountered an error:\n\n{error_msg}"
+            )
+
     # Thread-safe slot methods (called in main thread via signals)
 
     def _on_download_complete_safe(self):
@@ -512,6 +575,21 @@ class MainWindow(QMainWindow):
         else:
             # All successful
             self.log_viewer.append_log(f"\n=== All {total} downloads completed successfully! ===")
+
+            # Apply basic metadata for audio files (always runs)
+            file_format = self.settings.get("file_format", "video")
+            if file_format == "audio":
+                self.log_viewer.append_log("\n=== Applying basic metadata from YouTube ===")
+                self._apply_basic_metadata()
+
+            # Trigger beets processing if enabled and format is audio
+            if self._should_run_beets_processing():
+                self.log_viewer.append_log("\n=== Beets is enabled, starting advanced tagging ===")
+                self._run_beets_processing()
+            elif self.beets_options_widget.beets_checkbox.isChecked() and file_format == "audio":
+                # Checkbox is checked but not configured
+                self.log_viewer.append_log("\n[Info] Beets checkbox is checked but AcoustID API key not configured. Only basic metadata applied.")
+
             QMessageBox.information(
                 self,
                 "Success",
@@ -612,6 +690,98 @@ class MainWindow(QMainWindow):
                 self.move(window_pos[0], window_pos[1])
         except Exception as e:
             self.logger.warning(f"Could not restore window state: {e}")
+
+    def _apply_basic_metadata(self) -> None:
+        """
+        Apply basic YouTube metadata to downloaded audio files.
+        This runs for ALL audio downloads, independent of Beets.
+
+        NOTE: This is a simplified implementation that applies basic YouTube metadata.
+        For playlists, yt-dlp already embeds basic metadata during download.
+        This method is primarily a fallback and should not re-process all files.
+        """
+        try:
+            # yt-dlp now configured with FFmpegMetadata postprocessor
+            # Metadata (title, artist, album) is embedded during download automatically
+            # For enhanced metadata (MusicBrainz, album art, etc.), Beets processing runs separately
+            self.log_viewer.append_log("[Metadata] YouTube metadata embedded by yt-dlp during download")
+            self.logger.info("Basic metadata handled by yt-dlp FFmpegMetadata postprocessor")
+            return
+
+        except Exception as e:
+            self.logger.error(f"Error in metadata processing: {e}")
+
+    def _should_run_beets_processing(self) -> bool:
+        """
+        Check if beets processing should run after downloads.
+
+        Returns:
+            bool: True if beets should process downloaded files
+        """
+        # Only run if beets is enabled
+        if not self.beets_options_widget.is_enabled():
+            return False
+
+        # Only run for audio downloads
+        file_format = self.settings.get("file_format", "video")
+        if file_format != "audio":
+            self.logger.info("Skipping beets processing (not audio format)")
+            return False
+
+        return True
+
+    def _run_beets_processing(self) -> None:
+        """
+        Run in-place fingerprinting and tagging on downloaded audio files.
+        Tags files directly in the download folder - does NOT move them.
+        """
+        try:
+            # Get download directory
+            download_dir = self.settings.get("download_directory")
+            if not download_dir:
+                self.logger.warning("No download directory set")
+                return
+
+            # Get API key from beets manager
+            api_key = self.beets_manager.get_acoustid_key()
+            if not api_key:
+                self.logger.error("No AcoustID API key found")
+                self.log_viewer.append_log("[Tagging] ERROR: AcoustID API key not configured")
+                return
+
+            self.log_viewer.append_log("\n=== Starting music fingerprinting and tagging ===")
+            self.log_viewer.append_log("[Tagging] Tagging files IN-PLACE in download folder")
+            self.status_bar.showMessage("Fingerprinting and tagging audio files...")
+
+            # Create in-place tagger
+            tagger = AcoustIDTagger(api_key)
+
+            if not tagger.is_available():
+                error = "AcoustID or Mutagen not installed"
+                self.logger.error(error)
+                self.log_viewer.append_log(f"[Tagging] ERROR: {error}")
+                return
+
+            # Define callbacks that emit signals (thread-safe)
+            def on_progress(message: str):
+                self.beets_progress_signal.emit(message)
+
+            def on_complete(success: bool, error_msg: Optional[str]):
+                self.beets_complete_signal.emit(success, error_msg or "")
+
+            # Start tagging
+            success = tagger.tag_directory(
+                directory=download_dir,
+                progress_callback=on_progress,
+                completion_callback=on_complete
+            )
+
+            if not success:
+                self.logger.warning("Failed to start fingerprinting")
+
+        except Exception as e:
+            self.logger.error(f"Error running fingerprinting: {e}")
+            self.log_viewer.append_log(f"[Tagging] ERROR: {e}")
 
     def closeEvent(self, event):
         """

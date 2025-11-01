@@ -9,5 +9,6 @@ from .options import OptionsWidget
 from .output_select import OutputSelectWidget
 from .progress_widget import ProgressWidget
 from .log_viewer import LogViewer
+from .beets_options import BeetsOptionsWidget
 
-__all__ = ['LinkInputWidget', 'LinkListWidget', 'OptionsWidget', 'OutputSelectWidget', 'ProgressWidget', 'LogViewer']
+__all__ = ['LinkInputWidget', 'LinkListWidget', 'OptionsWidget', 'OutputSelectWidget', 'ProgressWidget', 'LogViewer', 'BeetsOptionsWidget']

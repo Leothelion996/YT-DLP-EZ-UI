@@ -19,6 +19,12 @@ CONFIG_DIR = APPDATA_DIR / APP_NAME
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 LOG_FILE = CONFIG_DIR / "app.log"
 
+# Beets music tagging paths
+BEETS_CONFIG_DIR = CONFIG_DIR / "beets_config"
+BEETS_CONFIG_FILE = BEETS_CONFIG_DIR / "config.yaml"
+BEETS_LIBRARY_DB = BEETS_CONFIG_DIR / "library.db"
+MISSING_METADATA_DIR = "Missing Metadata"
+
 # Download quality options
 VIDEO_RESOLUTIONS = [
     "144p",
@@ -53,7 +59,13 @@ DEFAULT_SETTINGS = {
     "video_quality": "Best Available",
     "audio_quality": "Best Available",
     "last_window_size": [800, 600],
-    "last_window_position": None
+    "last_window_position": None,
+    # Beets music tagging settings
+    "beets_enabled": False,
+    "beets_library_path": str(USER_HOME / "Music" / "Beets Library"),
+    "beets_dry_run": False,
+    "beets_concurrency": 2,
+    "beets_acoustid_configured": False
 }
 
 # URL validation patterns
@@ -80,3 +92,9 @@ LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_DATE_FORMAT = '%Y-%m-%d %H:%M:%S'
 LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
 LOG_BACKUP_COUNT = 5
+
+# Fingerprinting log files
+FINGERPRINT_LOG_DIR = CONFIG_DIR / "fingerprint_logs"
+FINGERPRINT_DETAILED_LOG = FINGERPRINT_LOG_DIR / "fingerprint_detailed.log"
+FINGERPRINT_SUMMARY_LOG = FINGERPRINT_LOG_DIR / "fingerprint_summary.log"
+FINGERPRINT_ERROR_LOG = FINGERPRINT_LOG_DIR / "fingerprint_errors.log"

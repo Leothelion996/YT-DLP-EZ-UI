@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual environments
 venv/
@@ -32,15 +33,30 @@ ENV/
 *.swp
 *.swo
 *~
+.DS_Store
 
 # OS
-.DS_Store
 Thumbs.db
+desktop.ini
 
-# Application-specific
+# Application-specific logs and data
 *.log
 settings.json
-.claude/
+user_profile.json
+*.db
+
+# Fingerprinting logs (generated at runtime)
+fingerprint_logs/
+
+# Beets configuration (contains API keys at runtime)
+beets_config/config.yaml
+beets_config/library.db
+beets_config/import.log
+
+# Chromaprint binary (auto-downloaded)
+bin/fpcalc.exe
+bin/chromaprint.zip
+
 # PyInstaller
 *.manifest
 *.spec
@@ -49,14 +65,39 @@ settings.json
 .pytest_cache/
 .coverage
 htmlcov/
+.tox/
 
 # Distribution
 *.exe
 *.dmg
 *.pkg
+*.app
 
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp
+*~.nib
+
+# Debug scripts (keep the directory, ignore contents)
+debug/*.py
+debug/*.txt
+debug/*.json
+!debug/DEBUG_README.md
+
+# User data directories (created at runtime)
+AppData/
+
+# Documentation (managed separately)
+.claude/
 Claude.md
 PROJECT_SPECIFICATION.md
 Overview.md
 readme.md
 VERSION_2_CHANGELOG.md
+CHANGELOG.md
+
+# Download test files (user-specific)
+test_downloads/
+temp/

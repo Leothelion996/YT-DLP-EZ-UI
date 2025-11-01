@@ -6,6 +6,15 @@ yt-dlp>=2023.12.30
 PyQt6>=6.6.0
 mutagen>=1.47.0
 
-# Optional but recommended
-# ffmpeg is required for audio extraction and merging
-# Install separately: https://ffmpeg.org/download.html
+# Beets music tagging and fingerprinting
+beets>=1.6.0
+pyacoustid>=1.3.0
+keyring>=24.0.0
+
+# NOTE: Chromaprint (fpcalc.exe) is auto-installed by the app when you enable Beets
+# If you prefer to install manually: https://acoustid.org/chromaprint
+
+# External dependencies (must be installed separately):
+# - FFmpeg: Required for audio/video processing
+#   Download: https://ffmpeg.org/download.html
+#   The app will look for ffmpeg.exe in system PATH or app directory
