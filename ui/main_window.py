@@ -6,7 +6,7 @@ Central application window that orchestrates all UI components.
 import sys
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QStatusBar, QMessageBox
@@ -28,12 +28,14 @@ from .widgets.output_select import OutputSelectWidget
 from .widgets.progress_widget import ProgressWidget
 from .widgets.log_viewer import LogViewer
 from .widgets.beets_options import BeetsOptionsWidget
+from .widgets.file_rename_dialog import FileRenameDialog  # v3.0
 
 from core.downloader import DownloadManager
 from core.queue_manager import QueueManager
 from core.beets_manager import BeetsManager
 from core.metadata import MetadataHandler
 from core.acoustid_tagger import AcoustIDTagger
+from utils.track_numberer import TrackNumberer
 
 
 class MainWindow(QMainWindow):
@@ -51,7 +53,7 @@ class MainWindow(QMainWindow):
 
     # Thread-safe signals for beets processing
     beets_progress_signal = pyqtSignal(str)  # progress message
-    beets_complete_signal = pyqtSignal(bool, str)  # success, error_msg
+    beets_complete_signal = pyqtSignal(bool, str, object)  # success, error_msg, results (v3.0: added results)
 
     def __init__(self):
         """Initialize the main window."""
@@ -77,6 +79,7 @@ class MainWindow(QMainWindow):
         self._playlist_videos_completed = 0  # Track individual playlist videos completed
         self._playlist_videos_total = 0  # Track total playlist videos expected
         self._last_logged_playlist_video = 0  # Track last logged video to avoid spam
+        self._download_session_folders = []  # Track folders created during download session (v3.0)
 
         self._init_ui()
         self._connect_signals()
@@ -304,6 +307,7 @@ class MainWindow(QMainWindow):
             self._playlist_videos_completed = 0  # Reset playlist video counter
             self._playlist_videos_total = 0  # Reset playlist total
             self._last_logged_playlist_video = 0  # Reset last logged video
+            self._download_session_folders = []  # Reset folder tracking for new session (v3.0)
 
             # Reset download manager cancellation flag
             self.download_manager.reset_cancel()
@@ -351,14 +355,28 @@ class MainWindow(QMainWindow):
         )
 
         # Thread-safe callbacks that emit signals
-        def on_complete():
+        def on_complete(folder_path):
+            """Handle download completion and track created folder path."""
+            # Track the folder created during this download (v3.0)
+            if folder_path and folder_path not in self._download_session_folders:
+                self._download_session_folders.append(folder_path)
+                self.logger.info(f"Tracked folder for fingerprinting: {folder_path}")
+
             self.download_complete_signal.emit()
 
         def on_error(error_msg):
             self.download_error_signal.emit(error_msg)
 
+        # Track if we've logged the start of this download
+        download_started_logged = {'logged': False}
+
         def on_progress(progress_dict):
             """Handle progress updates from yt-dlp."""
+            # Log when download actually starts (first progress callback)
+            if not download_started_logged['logged']:
+                download_started_logged['logged'] = True
+                self.playlist_progress_signal.emit(f"[{self._download_index + 1}/{self._download_total}] Starting download: {url}")
+
             # Extract playlist information if available
             # yt-dlp provides playlist data in info_dict (primary source)
             info_dict = progress_dict.get('info_dict', {})
@@ -381,8 +399,18 @@ class MainWindow(QMainWindow):
                 # It's a playlist - track total count
                 if self._playlist_videos_total == 0:
                     self._playlist_videos_total = playlist_count
+                    # Reset the counter for this new playlist
+                    self._last_logged_playlist_video = 0
                     # Emit signal to log to UI
                     self.playlist_progress_signal.emit(f"Starting playlist download: {playlist_count} videos total")
+                elif playlist_count != self._playlist_videos_total:
+                    # Different playlist detected (count changed), reset counter
+                    self._playlist_videos_total = playlist_count
+                    self._last_logged_playlist_video = 0
+                    self.playlist_progress_signal.emit(f"Starting playlist download: {playlist_count} videos total")
+
+                # v3.0: Update playlist progress bar
+                self.progress_widget.set_playlist_progress(playlist_index, playlist_count)
 
                 # Check status
                 status = progress_dict.get('status', '')
@@ -403,10 +431,12 @@ class MainWindow(QMainWindow):
                         msg = f"[Playlist {playlist_index}/{playlist_count}] Downloading: {video_title}"
                         self.playlist_progress_signal.emit(msg)
                 elif status == 'finished':
-                    # Track completed playlist videos
+                    # NOTE: 'finished' means download finished, but FFmpeg post-processing may still be running
+                    # Don't log "Completed" here - it's premature and confusing
+                    # Just update the progress bar silently
                     self._playlist_videos_completed += 1
-                    finish_msg = f"[Playlist {playlist_index}/{playlist_count}] Completed: {video_title}"
-                    self.playlist_progress_signal.emit(finish_msg)
+                    # v3.0: Update playlist progress bar on completion too
+                    self.progress_widget.set_playlist_progress(playlist_index, playlist_count)
 
         # Start async download
         self.download_manager.download_async(
@@ -446,17 +476,49 @@ class MainWindow(QMainWindow):
         """
         self.log_viewer.append_log(f"[Beets] {message}")
 
-    def _on_beets_complete_safe(self, success: bool, error_msg: str):
+    def _on_beets_complete_safe(self, success: bool, error_msg: str, results: Optional[List[Dict]] = None):
         """
         Handle beets completion safely in main thread.
+        v3.0: Now shows file rename dialog after successful tagging.
+        v3.1: Sets track numbers based on creation time after tagging.
 
         Args:
             success: True if processing succeeded
             error_msg: Error message if failed (empty string if success)
+            results: List of tagging results (v3.0)
         """
         if success:
             self.log_viewer.append_log("[Beets] Processing complete!")
             self.status_bar.showMessage("Music tagging complete", 5000)
+
+            # v3.1: Set track numbers for each downloaded folder
+            if self._download_session_folders:
+                self.log_viewer.append_log("\n=== Setting track numbers based on creation time ===")
+                self._set_track_numbers_for_session_folders()
+
+            # v3.0: Show file rename dialog if we have successful results
+            if results:
+                # Filter successful results only, AND exclude files with missing metadata
+                successful_files = [
+                    {
+                        'path': Path(r['file']),
+                        'title': r.get('title', 'UNKNOWN'),
+                        'artist': r.get('artist', 'UNKNOWN')
+                    }
+                    for r in results
+                    if r.get('success', False)
+                    and r.get('title')
+                    and r.get('title') not in ['UNKNOWN', 'Unknown', '']
+                ]
+
+                if successful_files:
+                    self.logger.info(f"Showing rename dialog for {len(successful_files)} successfully tagged files")
+                    self._show_rename_dialog(successful_files)
+                else:
+                    self.logger.info("No successfully tagged files to rename")
+            else:
+                self.logger.info("No results provided from tagging")
+
         else:
             self.log_viewer.append_log(f"[Beets] ERROR: {error_msg}")
             self.status_bar.showMessage("Music tagging failed", 5000)
@@ -464,6 +526,72 @@ class MainWindow(QMainWindow):
                 self,
                 "Beets Processing Failed",
                 f"Music fingerprinting encountered an error:\n\n{error_msg}"
+            )
+
+    def _set_track_numbers_for_session_folders(self) -> None:
+        """
+        Set track numbers for all folders downloaded in this session (v3.1).
+        Track numbers are set based on file creation time (oldest = track 1).
+        """
+        try:
+            track_numberer = TrackNumberer()
+
+            if not track_numberer.is_available():
+                self.logger.warning("TrackNumberer not available (Mutagen missing)")
+                self.log_viewer.append_log("[Track Numbers] Skipping - Mutagen not available")
+                return
+
+            total_updated = 0
+            total_failed = 0
+
+            for folder in self._download_session_folders:
+                self.log_viewer.append_log(f"[Track Numbers] Processing folder: {folder.name}")
+
+                result = track_numberer.number_tracks(
+                    folder=folder,
+                    progress_callback=lambda msg: self.log_viewer.append_log(f"[Track Numbers] {msg}")
+                )
+
+                if result['success']:
+                    total_updated += result['updated']
+                    total_failed += result['failed']
+                    self.log_viewer.append_log(
+                        f"[Track Numbers] {folder.name}: {result['updated']} updated, {result['failed']} failed"
+                    )
+                else:
+                    error = result.get('error', 'Unknown error')
+                    self.log_viewer.append_log(f"[Track Numbers] ERROR in {folder.name}: {error}")
+
+            # Summary
+            if total_updated > 0:
+                self.log_viewer.append_log(
+                    f"[Track Numbers] Complete: {total_updated} files updated across {len(self._download_session_folders)} folder(s)"
+                )
+                self.logger.info(f"Track numbers set: {total_updated} files updated, {total_failed} failed")
+            else:
+                self.log_viewer.append_log("[Track Numbers] No track numbers were set")
+
+        except Exception as e:
+            self.logger.error(f"Error setting track numbers: {e}")
+            self.log_viewer.append_log(f"[Track Numbers] ERROR: {e}")
+
+    def _show_rename_dialog(self, tagged_files: List[Dict]):
+        """
+        Show file rename dialog after successful tagging (v3.0).
+
+        Args:
+            tagged_files: List of dicts with 'path', 'title', 'artist' keys
+        """
+        try:
+            dialog = FileRenameDialog(tagged_files, parent=self)
+            dialog.exec()  # Show as modal dialog
+            self.logger.info("Rename dialog closed")
+        except Exception as e:
+            self.logger.error(f"Error showing rename dialog: {e}")
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to show file rename dialog:\n\n{str(e)}"
             )
 
     # Thread-safe slot methods (called in main thread via signals)
@@ -479,6 +607,11 @@ class MainWindow(QMainWindow):
 
         # Log success
         self.log_viewer.append_log(f"[{self._download_index + 1}/{self._download_total}] Download completed successfully!")
+
+        # Reset playlist counters for next download
+        self._playlist_videos_total = 0
+        self._last_logged_playlist_video = 0
+        self._playlist_videos_completed = 0
 
         self._download_index += 1
         # Continue with next download
@@ -523,8 +656,8 @@ class MainWindow(QMainWindow):
         # Highlight current download in queue list
         self.link_list.highlight_url(url)
 
-        # Log to viewer
-        self.log_viewer.append_log(f"[{current}/{total}] Starting download: {url}")
+        # Note: Don't log "Starting download" here - it will be logged by yt-dlp progress callback
+        # when the download actually begins
 
     def _on_playlist_progress_safe(self, message: str):
         """
@@ -582,7 +715,24 @@ class MainWindow(QMainWindow):
                 msg
             )
         elif error_count > 0:
-            # Some downloads failed - show error summary
+            # Some downloads failed - but still process successful ones
+            self.log_viewer.append_log(f"\n=== Downloads completed with {error_count} error(s), {success_count} succeeded ===")
+
+            # Apply basic metadata and fingerprinting for successfully downloaded files
+            file_format = self.settings.get("file_format", "video")
+            if file_format == "audio" and success_count > 0:
+                self.log_viewer.append_log("\n=== Applying basic metadata from YouTube ===")
+                self._apply_basic_metadata()
+
+                # Trigger beets processing if enabled and format is audio
+                if self._should_run_beets_processing():
+                    self.log_viewer.append_log("\n=== Beets is enabled, starting advanced tagging ===")
+                    self._run_beets_processing()
+                elif self.beets_options_widget.beets_checkbox.isChecked():
+                    # Checkbox is checked but not configured
+                    self.log_viewer.append_log("\n[Info] Beets checkbox is checked but AcoustID API key not configured. Only basic metadata applied.")
+
+            # Show error summary after processing
             self._show_error_summary(total, success_count, error_count)
         else:
             # All successful
@@ -746,6 +896,7 @@ class MainWindow(QMainWindow):
         """
         Run in-place fingerprinting and tagging on downloaded audio files.
         Tags files directly in the download folder - does NOT move them.
+        v3.0: Now uses folder tracking instead of time-based filtering.
         """
         try:
             # Get download directory
@@ -762,6 +913,15 @@ class MainWindow(QMainWindow):
                 return
 
             self.log_viewer.append_log("\n=== Starting music fingerprinting and tagging ===")
+
+            # v3.0: Log folder tracking information
+            if self._download_session_folders:
+                self.log_viewer.append_log(f"[Tagging] Processing {len(self._download_session_folders)} folder(s) from this session")
+                for folder in self._download_session_folders:
+                    self.log_viewer.append_log(f"  - {folder.name}")
+            else:
+                self.log_viewer.append_log("[Tagging] No folders tracked, processing entire download directory")
+
             self.log_viewer.append_log("[Tagging] Tagging files IN-PLACE in download folder")
             self.status_bar.showMessage("Fingerprinting and tagging audio files...")
 
@@ -778,14 +938,17 @@ class MainWindow(QMainWindow):
             def on_progress(message: str):
                 self.beets_progress_signal.emit(message)
 
-            def on_complete(success: bool, error_msg: Optional[str]):
-                self.beets_complete_signal.emit(success, error_msg or "")
+            def on_complete(success: bool, error_msg: Optional[str], results: Optional[List[Dict]] = None):
+                """v3.0: Now includes results for rename dialog."""
+                self.beets_complete_signal.emit(success, error_msg or "", results)
 
-            # Start tagging
+            # Start tagging with folder list (v3.0)
+            # If folders are tracked, process only those; otherwise fall back to directory scan
             success = tagger.tag_directory(
                 directory=download_dir,
                 progress_callback=on_progress,
-                completion_callback=on_complete
+                completion_callback=on_complete,
+                folder_list=self._download_session_folders if self._download_session_folders else None
             )
 
             if not success:

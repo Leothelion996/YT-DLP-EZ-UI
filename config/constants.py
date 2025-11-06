@@ -98,3 +98,4 @@ FINGERPRINT_LOG_DIR = CONFIG_DIR / "fingerprint_logs"
 FINGERPRINT_DETAILED_LOG = FINGERPRINT_LOG_DIR / "fingerprint_detailed.log"
 FINGERPRINT_SUMMARY_LOG = FINGERPRINT_LOG_DIR / "fingerprint_summary.log"
 FINGERPRINT_ERROR_LOG = FINGERPRINT_LOG_DIR / "fingerprint_errors.log"
+FINGERPRINT_ARCHIVE_LOG = FINGERPRINT_LOG_DIR / "fingerprint_archive.log"  # v3.0: Full fingerprint storage

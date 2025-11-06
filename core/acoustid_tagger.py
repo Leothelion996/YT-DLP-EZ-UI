@@ -25,11 +25,13 @@ except ImportError:
     MUTAGEN_AVAILABLE = False
 
 from utils.chromaprint_installer import ChromaprintInstaller
+from utils.cover_art_fetcher import CoverArtFetcher  # v3.0
 from config.constants import (
     FINGERPRINT_LOG_DIR,
     FINGERPRINT_DETAILED_LOG,
     FINGERPRINT_SUMMARY_LOG,
-    FINGERPRINT_ERROR_LOG
+    FINGERPRINT_ERROR_LOG,
+    FINGERPRINT_ARCHIVE_LOG  # v3.0
 )
 
 
@@ -153,7 +155,8 @@ class AcoustIDTagger:
         self,
         directory: str,
         progress_callback: Optional[Callable[[str], None]] = None,
-        completion_callback: Optional[Callable[[bool, Optional[str]], None]] = None
+        completion_callback: Optional[Callable[[bool, Optional[str], Optional[List[Dict]]], None]] = None,
+        folder_list: Optional[List[Path]] = None
     ) -> bool:
         """
         Tag all audio files in a directory using fingerprinting.
@@ -161,13 +164,22 @@ class AcoustIDTagger:
         Args:
             directory: Path to directory containing audio files
             progress_callback: Callback for progress updates
-            completion_callback: Callback on completion
+            completion_callback: Callback on completion (v3.0: now includes results list)
+            folder_list: (v3.0) Optional list of specific folders to process (bypasses time filter)
 
         Returns:
             bool: True if tagging started successfully
         """
         self.fp_logger.section(f"STARTING DIRECTORY TAGGING")
         self.fp_logger.detailed(f"Target directory: {directory}")
+
+        # v3.0: Log folder tracking mode
+        if folder_list:
+            self.fp_logger.detailed(f"v3.0 FOLDER TRACKING MODE: Processing {len(folder_list)} specific folders")
+            for folder in folder_list:
+                self.fp_logger.detailed(f"  - {folder}")
+        else:
+            self.fp_logger.detailed("TIME-BASED MODE: Using 300-second filter (fallback)")
 
         if not self.is_available():
             error = "AcoustID, Mutagen, or Chromaprint not available"
@@ -176,15 +188,22 @@ class AcoustIDTagger:
                 completion_callback(False, error)
             return False
 
-        # Find audio files
+        # Find audio files - use folder list if provided, otherwise time-based search
         self.fp_logger.detailed("Searching for audio files...")
-        audio_files = self._find_audio_files(directory)
+        if folder_list:
+            audio_files = self._find_audio_files_in_folders(folder_list)
+        else:
+            audio_files = self._find_audio_files(directory)
 
         if not audio_files:
-            error = f"No audio files found in {directory}"
-            self.fp_logger.error(error)
+            error_msg = f"No audio files found"
+            if folder_list:
+                error_msg += f" in {len(folder_list)} tracked folders"
+            else:
+                error_msg += f" in {directory}"
+            self.fp_logger.error(error_msg)
             if completion_callback:
-                completion_callback(False, error)
+                completion_callback(False, error_msg)
             return False
 
         self.fp_logger.summary(f"Found {len(audio_files)} audio files to fingerprint")
@@ -247,20 +266,64 @@ class AcoustIDTagger:
 
         return audio_files
 
+    def _find_audio_files_in_folders(self, folder_list: List[Path]) -> List[Path]:
+        """
+        Find audio files in specific folders (v3.0 folder tracking mode).
+        NO time-based filtering - processes ALL audio files in tracked folders.
+
+        Args:
+            folder_list: List of folder paths to search
+
+        Returns:
+            List of audio file paths
+        """
+        audio_extensions = ['.mp3', '.m4a', '.flac', '.ogg', '.opus']
+        audio_files = []
+
+        self.fp_logger.detailed(f"v3.0: Searching {len(folder_list)} tracked folders (NO time filter)")
+
+        for folder in folder_list:
+            if not folder.exists():
+                self.fp_logger.error(f"Tracked folder does not exist: {folder}")
+                continue
+
+            if not folder.is_dir():
+                self.fp_logger.error(f"Tracked path is not a directory: {folder}")
+                continue
+
+            self.fp_logger.detailed(f"Scanning folder: {folder}")
+            folder_files = []
+
+            for ext in audio_extensions:
+                found = list(folder.rglob(f'*{ext}'))
+                if found:
+                    self.fp_logger.detailed(f"  Found {len(found)} {ext} files in {folder.name}")
+                    folder_files.extend(found)
+
+            audio_files.extend(folder_files)
+            self.fp_logger.detailed(f"  Total files in {folder.name}: {len(folder_files)}")
+
+        self.fp_logger.summary(f"v3.0 Total files found in tracked folders: {len(audio_files)}")
+
+        return audio_files
+
     def _tag_worker(
         self,
         files: List[Path],
         progress_callback: Optional[Callable[[str], None]],
-        completion_callback: Optional[Callable[[bool, Optional[str]], None]]
+        completion_callback: Optional[Callable[[bool, Optional[str], Optional[List[Dict]]], None]]
     ):
-        """Worker thread to tag files."""
+        """
+        Worker thread to tag files.
+        v3.0: Now passes results list to completion callback.
+        """
         self.fp_logger.section("WORKER THREAD STARTED")
 
         try:
             total = len(files)
             successful = 0
             failed = 0
-            results = []
+            results = []  # v3.0: Collect all results for rename dialog
 
             for i, file_path in enumerate(files, 1):
                 self.fp_logger.section(f"PROCESSING FILE {i}/{total}")
@@ -307,14 +370,15 @@ class AcoustIDTagger:
             if progress_callback:
                 progress_callback(summary)
 
+            # v3.0: Pass results to completion callback for rename dialog
             if completion_callback:
-                completion_callback(True, None)
+                completion_callback(True, None, results)
 
         except Exception as e:
             error_msg = f"Tagging failed: {e}"
             self.fp_logger.error(f"CRITICAL ERROR: {error_msg}")
             if completion_callback:
-                completion_callback(False, error_msg)
+                completion_callback(False, error_msg, None)
 
     def _tag_file(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -413,10 +477,16 @@ class AcoustIDTagger:
             # Get album info from release groups
             album = ''
             year = ''
+            release_group_id = None  # v3.0: For album art fetching
             if 'releasegroups' in recording and recording['releasegroups']:
                 release_group = recording['releasegroups'][0]
                 album = release_group.get('title', '')
                 self.fp_logger.detailed(f"  Album: {album}")
+
+                # v3.0: Extract release group ID for cover art
+                release_group_id = release_group.get('id', None)
+                if release_group_id:
+                    self.fp_logger.detailed(f"  Release Group ID: {release_group_id}")
 
                 if 'first-release-date' in release_group:
                     year = release_group['first-release-date'][:4]
@@ -428,6 +498,16 @@ class AcoustIDTagger:
             self._write_tags(file_path, title, artist, album, year)
 
             self.fp_logger.detailed("  Tags written successfully")
+
+            # v3.0: Fetch and embed album artwork
+            if release_group_id:
+                self.fp_logger.detailed("STEP 5: Fetching and embedding album artwork")
+                self._fetch_and_embed_artwork(file_path, release_group_id)
+            else:
+                self.fp_logger.detailed("STEP 5: No release group ID - skipping album artwork")
+
+            # v3.0: Archive the fingerprint for future reference
+            self._archive_fingerprint(file_path, fingerprint, title, artist)
 
             result['success'] = True
             result['title'] = title
@@ -480,3 +560,78 @@ class AcoustIDTagger:
 
         except Exception as e:
             self.fp_logger.error(f"  Failed to write tags: {e}")
+
+    def _archive_fingerprint(self, file_path: Path, fingerprint: str, title: str, artist: str):
+        """
+        Archive the fingerprint to a log file for future metadata correction requests.
+        Format: [datetime] - [filename] - [songname] - [artist] - [full_fingerprint_string]
+
+        Args:
+            file_path: Path to audio file
+            fingerprint: Full AcoustID fingerprint string
+            title: Song title from metadata
+            artist: Artist name from metadata
+        """
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            filename = file_path.name
+            song_name = title if title else "UNKNOWN"
+            artist_name = artist if artist else "UNKNOWN"
+
+            # Format: [datetime] - [filename] - [songname] - [artist] - [full_fingerprint_string]
+            log_entry = f"{timestamp} - {filename} - {song_name} - {artist_name} - {fingerprint}\n"
+
+            # Ensure log directory exists
+            FINGERPRINT_LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+            # Append to archive log
+            with open(FINGERPRINT_ARCHIVE_LOG, 'a', encoding='utf-8') as f:
+                f.write(log_entry)
+
+            self.fp_logger.detailed(f"  Fingerprint archived to {FINGERPRINT_ARCHIVE_LOG.name}")
+
+        except Exception as e:
+            self.fp_logger.error(f"  Failed to archive fingerprint: {e}")
+
+    def _fetch_and_embed_artwork(self, file_path: Path, release_group_id: str):
+        """
+        Fetch album artwork from MusicBrainz and embed it in the audio file.
+        Also saves as cover.jpg in the same directory (v3.0).
+
+        Args:
+            file_path: Path to audio file
+            release_group_id: MusicBrainz Release Group ID
+        """
+        try:
+            fetcher = CoverArtFetcher()
+
+            # Fetch album artwork
+            self.fp_logger.detailed(f"  Fetching cover art for release group: {release_group_id}")
+            image_bytes = fetcher.fetch_cover_art(release_group_id)
+
+            if not image_bytes:
+                self.fp_logger.detailed(f"  No cover art available")
+                return
+
+            self.fp_logger.detailed(f"  Cover art downloaded ({len(image_bytes)} bytes)")
+
+            # Save as cover.jpg in the album folder
+            folder = file_path.parent
+            cover_path = fetcher.save_cover_jpg(image_bytes, folder)
+
+            if cover_path:
+                self.fp_logger.detailed(f"  Saved as: {cover_path.name}")
+            else:
+                self.fp_logger.error(f"  Failed to save cover.jpg")
+
+            # Embed in audio file
+            self.fp_logger.detailed(f"  Embedding cover art in audio file")
+            success = fetcher.embed_cover_art(file_path, image_bytes)
+
+            if success:
+                self.fp_logger.detailed(f"  Cover art embedded successfully")
+            else:
+                self.fp_logger.error(f"  Failed to embed cover art")
+
+        except Exception as e:
+            self.fp_logger.error(f"  Album artwork processing failed: {e}")

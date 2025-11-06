@@ -10,6 +10,7 @@ mutagen>=1.47.0
 beets>=1.6.0
 pyacoustid>=1.3.0
 keyring>=24.0.0
+requests>=2.31.0  # v3.0: For MusicBrainz cover art fetching
 
 # NOTE: Chromaprint (fpcalc.exe) is auto-installed by the app when you enable Beets
 # If you prefer to install manually: https://acoustid.org/chromaprint

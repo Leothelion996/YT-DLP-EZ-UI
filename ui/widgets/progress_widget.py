@@ -57,7 +57,7 @@ class ProgressWidget(QWidget):
 
         main_layout.addLayout(info_layout)
 
-        # Progress bar row
+        # Main progress bar row (URL-level progress)
         progress_layout = QHBoxLayout()
 
         self.progress_bar = QProgressBar()
@@ -69,6 +69,29 @@ class ProgressWidget(QWidget):
         progress_layout.addWidget(self.progress_bar)
 
         main_layout.addLayout(progress_layout)
+
+        # v3.0: Playlist progress bar (hidden by default, shows only for playlists)
+        playlist_layout = QVBoxLayout()
+        playlist_layout.setSpacing(2)
+
+        self.playlist_label = QLabel("Playlist Progress:")
+        self.playlist_label.setStyleSheet("color: #6c757d; font-size: 11px;")
+
+        self.playlist_progress_bar = QProgressBar()
+        self.playlist_progress_bar.setMinimum(0)
+        self.playlist_progress_bar.setMaximum(100)
+        self.playlist_progress_bar.setValue(0)
+        self.playlist_progress_bar.setTextVisible(True)
+        self.playlist_progress_bar.setMinimumHeight(20)
+
+        playlist_layout.addWidget(self.playlist_label)
+        playlist_layout.addWidget(self.playlist_progress_bar)
+
+        main_layout.addLayout(playlist_layout)
+
+        # Hide playlist progress by default
+        self.playlist_label.hide()
+        self.playlist_progress_bar.hide()
 
     def _on_more_info_clicked(self):
         """Handle More Info button click."""
@@ -93,11 +116,16 @@ class ProgressWidget(QWidget):
             total: Total number of downloads
             url: Current URL being downloaded (optional)
         """
-        # Calculate percentage
+        # Calculate percentage based on completed downloads
+        # When starting download 1 of 3, show 0% (0 completed)
+        # When starting download 2 of 3, show 33% (1 completed)
+        # When starting download 3 of 3, show 66% (2 completed)
+        # Only shows 100% when all are done via set_complete()
         if total > 0:
-            percentage = int((current / total) * 100)
+            completed = current - 1  # Downloads completed so far
+            percentage = int((completed / total) * 100)
             self.progress_bar.setValue(percentage)
-            self.progress_bar.setFormat(f"{current}/{total} - {percentage}%")
+            self.progress_bar.setFormat(f"{completed}/{total} completed - {percentage}%")
 
         # Update status label
         if url:
@@ -107,7 +135,7 @@ class ProgressWidget(QWidget):
         else:
             self.status_label.setText(f"Downloading {current} of {total}")
 
-        self.logger.info(f"Progress updated: {current}/{total}")
+        self.logger.info(f"Progress updated: {current}/{total}, {completed}/{total} completed")
 
     def set_complete(self):
         """Set progress to completed state."""
@@ -116,6 +144,36 @@ class ProgressWidget(QWidget):
         self.status_label.setText("All downloads completed!")
         self.logger.info("Progress set to complete")
 
+    def set_playlist_progress(self, current: int, total: int):
+        """
+        Update playlist progress (v3.0).
+        Shows playlist progress bar and updates it.
+
+        Args:
+            current: Current video number in playlist
+            total: Total videos in playlist
+        """
+        # Show playlist progress elements if hidden
+        if not self.playlist_progress_bar.isVisible():
+            self.playlist_label.show()
+            self.playlist_progress_bar.show()
+
+        # Calculate percentage
+        if total > 0:
+            percentage = int((current / total) * 100)
+            self.playlist_progress_bar.setValue(percentage)
+            self.playlist_progress_bar.setFormat(f"{current}/{total} videos - {percentage}%")
+        else:
+            self.playlist_progress_bar.setValue(0)
+            self.playlist_progress_bar.setFormat("0%")
+
+        self.logger.info(f"Playlist progress updated: {current}/{total}")
+
+    def hide_playlist_progress(self):
+        """Hide the playlist progress bar (v3.0)."""
+        self.playlist_label.hide()
+        self.playlist_progress_bar.hide()
+
     def reset(self):
         """Reset progress to initial state."""
         self.progress_bar.setValue(0)
@@ -123,6 +181,9 @@ class ProgressWidget(QWidget):
         self.status_label.setText("Downloading...")
         self._log_viewer_visible = False
         self.more_info_button.setText("More Info")
+        # v3.0: Also reset playlist progress
+        self.hide_playlist_progress()
+        self.playlist_progress_bar.setValue(0)
         self.logger.info("Progress reset")
 
     def show_widget(self):

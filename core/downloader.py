@@ -146,6 +146,7 @@ class DownloadManager:
             'quiet': False,
             'no_warnings': False,
             'extract_flat': False,
+            'ignoreerrors': True,  # Skip unavailable/private/age-restricted videos in playlists
         }
 
         # Progress hook
@@ -191,7 +192,7 @@ class DownloadManager:
         file_format: str = 'video',
         quality: str = 'Best Available',
         progress_callback: Optional[Callable] = None,
-        completion_callback: Optional[Callable] = None,
+        completion_callback: Optional[Callable[[Path], None]] = None,
         error_callback: Optional[Callable] = None
     ) -> bool:
         """
@@ -203,7 +204,7 @@ class DownloadManager:
             file_format: 'video' or 'audio'
             quality: Quality string
             progress_callback: Callback for progress updates (dict with progress info)
-            completion_callback: Callback on successful completion
+            completion_callback: Callback on successful completion (receives Path to created folder)
             error_callback: Callback on error (receives error message)
 
         Returns:
@@ -236,6 +237,7 @@ class DownloadManager:
         try:
             video_info = self.get_video_info(url)
             folder_name = None
+            created_folder_path = None
 
             if video_info:
                 if video_info['type'] == 'playlist':
@@ -244,6 +246,12 @@ class DownloadManager:
                 else:
                     folder_name = video_info['title']
                     self.logger.info(f"Creating folder for video: {folder_name}")
+
+                # Calculate the folder path that will be created
+                if folder_name:
+                    safe_folder = FileUtils.get_safe_filename(folder_name)
+                    created_folder_path = Path(output_dir) / safe_folder
+                    self.logger.info(f"Folder path for tracking: {created_folder_path}")
 
             # Wrap progress callback to check for cancellation
             def cancellable_progress_callback(progress_dict):
@@ -284,8 +292,9 @@ class DownloadManager:
                     self.logger.warning(f"Download cancelled after completion: {url}")
                     return False
 
+                # Call completion callback with the created folder path
                 if completion_callback:
-                    completion_callback()
+                    completion_callback(created_folder_path)
 
                 return True
 

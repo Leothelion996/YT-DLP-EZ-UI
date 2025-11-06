@@ -91,13 +91,11 @@ AppData/
 
 # Documentation (managed separately)
 .claude/
-Claude.md
-PROJECT_SPECIFICATION.md
-Overview.md
-readme.md
-VERSION_2_CHANGELOG.md
-CHANGELOG.md
+CLAUDE.md
 
 # Download test files (user-specific)
 test_downloads/
 temp/
+
+# Standalone scripts (archived/removed)
+set_track_numbers_by_creation.py

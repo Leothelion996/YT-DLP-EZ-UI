@@ -10,5 +10,6 @@ from .output_select import OutputSelectWidget
 from .progress_widget import ProgressWidget
 from .log_viewer import LogViewer
 from .beets_options import BeetsOptionsWidget
+from .file_rename_dialog import FileRenameDialog  # v3.0
 
-__all__ = ['LinkInputWidget', 'LinkListWidget', 'OptionsWidget', 'OutputSelectWidget', 'ProgressWidget', 'LogViewer', 'BeetsOptionsWidget']
+__all__ = ['LinkInputWidget', 'LinkListWidget', 'OptionsWidget', 'OutputSelectWidget', 'ProgressWidget', 'LogViewer', 'BeetsOptionsWidget', 'FileRenameDialog']
