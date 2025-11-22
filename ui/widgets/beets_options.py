@@ -387,3 +387,18 @@ class BeetsOptionsWidget(QWidget):
             self.beets_checkbox.isChecked() and
             self.beets_manager.is_acoustid_configured()
         )
+
+    def set_format_visibility(self, file_format: str):
+        """
+        Show or hide the widget based on format selection.
+        Only show for audio formats (hide for video).
+
+        Args:
+            file_format: The selected format ("audio" or "video")
+        """
+        if file_format == "audio":
+            self.show()
+            self.logger.info("BeetsOptionsWidget shown for audio format")
+        else:
+            self.hide()
+            self.logger.info("BeetsOptionsWidget hidden for video format")

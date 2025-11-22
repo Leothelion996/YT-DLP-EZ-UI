@@ -66,6 +66,7 @@ class ProgressWidget(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setMinimumHeight(25)
+        self.progress_bar.setStyleSheet("QProgressBar { color: #c0c0c0; }")  # Light gray text
         progress_layout.addWidget(self.progress_bar)
 
         main_layout.addLayout(progress_layout)
@@ -83,6 +84,7 @@ class ProgressWidget(QWidget):
         self.playlist_progress_bar.setValue(0)
         self.playlist_progress_bar.setTextVisible(True)
         self.playlist_progress_bar.setMinimumHeight(20)
+        self.playlist_progress_bar.setStyleSheet("QProgressBar { color: #c0c0c0; }")  # Light gray text
 
         playlist_layout.addWidget(self.playlist_label)
         playlist_layout.addWidget(self.playlist_progress_bar)
@@ -92,6 +94,30 @@ class ProgressWidget(QWidget):
         # Hide playlist progress by default
         self.playlist_label.hide()
         self.playlist_progress_bar.hide()
+
+        # Fingerprinting progress bar (hidden by default, shows during fingerprinting)
+        fingerprint_layout = QVBoxLayout()
+        fingerprint_layout.setSpacing(2)
+
+        self.fingerprint_label = QLabel("Music Fingerprinting Progress:")
+        self.fingerprint_label.setStyleSheet("color: #6c757d; font-size: 11px;")
+
+        self.fingerprint_progress_bar = QProgressBar()
+        self.fingerprint_progress_bar.setMinimum(0)
+        self.fingerprint_progress_bar.setMaximum(100)
+        self.fingerprint_progress_bar.setValue(0)
+        self.fingerprint_progress_bar.setTextVisible(True)
+        self.fingerprint_progress_bar.setMinimumHeight(20)
+        self.fingerprint_progress_bar.setStyleSheet("QProgressBar { color: #c0c0c0; }")  # Light gray text
+
+        fingerprint_layout.addWidget(self.fingerprint_label)
+        fingerprint_layout.addWidget(self.fingerprint_progress_bar)
+
+        main_layout.addLayout(fingerprint_layout)
+
+        # Hide fingerprint progress by default
+        self.fingerprint_label.hide()
+        self.fingerprint_progress_bar.hide()
 
     def _on_more_info_clicked(self):
         """Handle More Info button click."""
@@ -174,6 +200,42 @@ class ProgressWidget(QWidget):
         self.playlist_label.hide()
         self.playlist_progress_bar.hide()
 
+    def set_fingerprint_progress(self, current: int, total: int):
+        """
+        Update fingerprinting progress.
+        Shows fingerprint progress bar and updates it.
+
+        Args:
+            current: Current file being fingerprinted
+            total: Total files to fingerprint
+        """
+        # Show fingerprint progress elements if hidden
+        if not self.fingerprint_progress_bar.isVisible():
+            self.fingerprint_label.show()
+            self.fingerprint_progress_bar.show()
+
+        # Calculate percentage
+        if total > 0:
+            percentage = int((current / total) * 100)
+            self.fingerprint_progress_bar.setValue(percentage)
+            self.fingerprint_progress_bar.setFormat(f"{current}/{total} files - {percentage}%")
+        else:
+            self.fingerprint_progress_bar.setValue(0)
+            self.fingerprint_progress_bar.setFormat("0%")
+
+        self.logger.info(f"Fingerprint progress updated: {current}/{total}")
+
+    def hide_fingerprint_progress(self):
+        """Hide the fingerprint progress bar."""
+        self.fingerprint_label.hide()
+        self.fingerprint_progress_bar.hide()
+
+    def set_fingerprint_complete(self):
+        """Set fingerprinting to completed state."""
+        self.fingerprint_progress_bar.setValue(100)
+        self.fingerprint_progress_bar.setFormat("Complete")
+        self.logger.info("Fingerprinting set to complete")
+
     def reset(self):
         """Reset progress to initial state."""
         self.progress_bar.setValue(0)
@@ -184,6 +246,9 @@ class ProgressWidget(QWidget):
         # v3.0: Also reset playlist progress
         self.hide_playlist_progress()
         self.playlist_progress_bar.setValue(0)
+        # Reset fingerprint progress
+        self.hide_fingerprint_progress()
+        self.fingerprint_progress_bar.setValue(0)
         self.logger.info("Progress reset")
 
     def show_widget(self):

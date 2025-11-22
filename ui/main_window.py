@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self._playlist_videos_total = 0  # Track total playlist videos expected
         self._last_logged_playlist_video = 0  # Track last logged video to avoid spam
         self._download_session_folders = []  # Track folders created during download session (v3.0)
+        self._all_processes_complete = False  # Track if downloads and fingerprinting are fully complete
 
         self._init_ui()
         self._connect_signals()
@@ -200,6 +201,10 @@ class MainWindow(QMainWindow):
         # Beets options widget signals
         self.beets_options_widget.beets_enabled_changed.connect(self._on_beets_enabled_changed)
 
+        # Set initial beets options visibility based on current format
+        current_format = self.options_widget.get_file_format()
+        self.beets_options_widget.set_format_visibility(current_format)
+
         # Thread-safe download signals
         self.download_complete_signal.connect(self._on_download_complete_safe)
         self.download_error_signal.connect(self._on_download_error_safe)
@@ -306,6 +311,7 @@ class MainWindow(QMainWindow):
             self._user_cancelled = False  # Reset cancellation flag
             self._playlist_videos_completed = 0  # Reset playlist video counter
             self._playlist_videos_total = 0  # Reset playlist total
+            self._all_processes_complete = False  # Reset completion flag for new session
             self._last_logged_playlist_video = 0  # Reset last logged video
             self._download_session_folders = []  # Reset folder tracking for new session (v3.0)
 
@@ -458,6 +464,9 @@ class MainWindow(QMainWindow):
         """
         self.logger.info(f"File format changed to: {file_format}")
 
+        # Show/hide beets options based on format (only show for audio)
+        self.beets_options_widget.set_format_visibility(file_format)
+
     def _on_beets_enabled_changed(self, enabled: bool):
         """
         Handle beets tagging enable/disable.
@@ -470,11 +479,26 @@ class MainWindow(QMainWindow):
     def _on_beets_progress_safe(self, message: str):
         """
         Handle beets progress update safely in main thread.
+        Also updates the fingerprinting progress bar.
 
         Args:
-            message: Progress message from beets
+            message: Progress message from beets (format: "Fingerprinting {i}/{total}: {filename}")
         """
         self.log_viewer.append_log(f"[Beets] {message}")
+
+        # Parse progress message to update fingerprint progress bar
+        # Message format: "Fingerprinting 1/10: filename.mp3"
+        if message.startswith("Fingerprinting "):
+            try:
+                # Extract "1/10" from "Fingerprinting 1/10: filename.mp3"
+                parts = message.split(":")
+                if len(parts) >= 2:
+                    progress_part = parts[0].replace("Fingerprinting ", "").strip()
+                    if "/" in progress_part:
+                        current, total = progress_part.split("/")
+                        self.progress_widget.set_fingerprint_progress(int(current), int(total))
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Failed to parse fingerprint progress: {message}, error: {e}")
 
     def _on_beets_complete_safe(self, success: bool, error_msg: str, results: Optional[List[Dict]] = None):
         """
@@ -487,6 +511,12 @@ class MainWindow(QMainWindow):
             error_msg: Error message if failed (empty string if success)
             results: List of tagging results (v3.0)
         """
+        # Mark fingerprinting as complete in progress bar
+        self.progress_widget.set_fingerprint_complete()
+
+        # Mark all processes as complete (downloads + fingerprinting done)
+        self._all_processes_complete = True
+
         if success:
             self.log_viewer.append_log("[Beets] Processing complete!")
             self.status_bar.showMessage("Music tagging complete", 5000)
@@ -758,9 +788,13 @@ class MainWindow(QMainWindow):
                 f"Downloaded {total} item(s) successfully!"
             )
 
-        # Hide cancel and progress widget after user dismisses dialog
+        # Hide cancel button after user dismisses dialog
+        # Keep progress widget visible for fingerprinting progress
         self.cancel_button.hide()
-        self.progress_widget.hide_widget()
+
+        # If beets is not running, mark all processes as complete
+        if not self._should_run_beets_processing():
+            self._all_processes_complete = True
 
         self.logger.info(f"Downloads complete: {success_count} succeeded, {error_count} failed, cancelled: {self._user_cancelled}")
 
@@ -957,6 +991,23 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.logger.error(f"Error running fingerprinting: {e}")
             self.log_viewer.append_log(f"[Tagging] ERROR: {e}")
+
+    def mousePressEvent(self, event):
+        """
+        Handle mouse press events on the main window.
+        Hides progress widget after all processes complete when user clicks anywhere.
+
+        Args:
+            event: Mouse press event
+        """
+        # If all processes are complete and progress widget is visible, hide it
+        if self._all_processes_complete and self.progress_widget.isVisible():
+            self.progress_widget.hide_widget()
+            self._all_processes_complete = False  # Reset flag for next download session
+            self.logger.info("Progress widget hidden after completion (user clicked)")
+
+        # Call parent implementation to ensure normal event handling
+        super().mousePressEvent(event)
 
     def closeEvent(self, event):
         """

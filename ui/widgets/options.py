@@ -85,17 +85,8 @@ class OptionsWidget(QWidget):
             self.format_combo.setCurrentText("Audio Only")
 
         # Update quality options based on format
+        # This now handles loading the saved quality or defaulting to "Best Available"
         self._update_quality_options()
-
-        # Load quality setting
-        if saved_format == 'video':
-            saved_quality = self.settings.video_quality
-            if saved_quality in VIDEO_RESOLUTIONS:
-                self.quality_combo.setCurrentText(saved_quality)
-        else:
-            saved_quality = self.settings.audio_quality
-            if saved_quality in AUDIO_BITRATES:
-                self.quality_combo.setCurrentText(saved_quality)
 
     def _on_format_changed(self, format_text: str):
         """
@@ -138,6 +129,9 @@ class OptionsWidget(QWidget):
         """Update quality combo box based on current format selection."""
         current_format = self.format_combo.currentText()
 
+        # Block signals while updating to prevent interference
+        self.quality_combo.blockSignals(True)
+
         # Clear current options
         self.quality_combo.clear()
 
@@ -145,9 +139,24 @@ class OptionsWidget(QWidget):
         if current_format == "Video":
             self.quality_label.setText("Resolution:")
             self.quality_combo.addItems(VIDEO_RESOLUTIONS)
+            # Restore saved video quality or default to "Best Available"
+            saved_quality = self.settings.video_quality
+            if saved_quality in VIDEO_RESOLUTIONS:
+                self.quality_combo.setCurrentText(saved_quality)
+            else:
+                self.quality_combo.setCurrentText("Best Available")
         else:  # Audio Only
             self.quality_label.setText("Bitrate:")
             self.quality_combo.addItems(AUDIO_BITRATES)
+            # Restore saved audio quality or default to "Best Available"
+            saved_quality = self.settings.audio_quality
+            if saved_quality in AUDIO_BITRATES:
+                self.quality_combo.setCurrentText(saved_quality)
+            else:
+                self.quality_combo.setCurrentText("Best Available")
+
+        # Unblock signals after updating is complete
+        self.quality_combo.blockSignals(False)
 
     def get_file_format(self) -> str:
         """
