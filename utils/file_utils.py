@@ -143,6 +143,36 @@ class FileUtils:
                 raise ValueError(f"Could not find unique filename for {filename}")
 
     @staticmethod
+    def get_unique_folder_name(parent_dir: str, folder_name: str) -> str:
+        """
+        Get a unique folder name by adding (1), (2) etc. if folder exists.
+
+        Args:
+            parent_dir: Parent directory path
+            folder_name: Desired folder name
+
+        Returns:
+            str: Unique folder name that doesn't exist yet
+        """
+        base_path = Path(parent_dir) / folder_name
+
+        if not base_path.exists():
+            return folder_name
+
+        # Try adding (1), (2), (3)... until we find a unique name
+        counter = 1
+        while True:
+            new_name = f"{folder_name} ({counter})"
+            new_path = Path(parent_dir) / new_name
+            if not new_path.exists():
+                return new_name
+            counter += 1
+
+            # Safety check to avoid infinite loop
+            if counter > 9999:
+                raise ValueError(f"Could not find unique folder name for {folder_name}")
+
+    @staticmethod
     def get_file_size_mb(filepath: str) -> Optional[float]:
         """
         Get file size in megabytes.

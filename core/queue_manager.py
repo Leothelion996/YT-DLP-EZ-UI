@@ -13,7 +13,7 @@ from core.url_parser import URLParser
 class QueueItem:
     """Represents a single item in the download queue."""
 
-    def __init__(self, url: str, title: str = None, is_playlist: bool = False):
+    def __init__(self, url: str, title: str = None, is_playlist: bool = False, is_album: bool = False):
         """
         Initialize a queue item.
 
@@ -21,10 +21,12 @@ class QueueItem:
             url: YouTube URL
             title: Video/playlist title (optional)
             is_playlist: Whether this is a playlist
+            is_album: Whether this playlist should be treated as an album
         """
         self.url = url
         self.title = title or url
         self.is_playlist = is_playlist
+        self.is_album = is_album
         self.status = "pending"  # pending, downloading, completed, failed
 
     def to_dict(self) -> Dict:
@@ -38,6 +40,7 @@ class QueueItem:
             'url': self.url,
             'title': self.title,
             'is_playlist': self.is_playlist,
+            'is_album': self.is_album,
             'status': self.status
         }
 
@@ -263,4 +266,44 @@ class QueueManager:
 
         except Exception as e:
             self.logger.error(f"Error updating status: {e}")
+            return False
+
+    def set_album_status(self, url: str, is_album: bool) -> bool:
+        """
+        Set whether a playlist should be treated as an album.
+
+        Args:
+            url: YouTube URL
+            is_album: Whether to treat as album
+
+        Returns:
+            bool: True if updated successfully
+        """
+        try:
+            with self._lock:
+                for item in self._queue:
+                    if item.url == url:
+                        item.is_album = is_album
+                        self.logger.info(f"Set album status for {url}: {is_album}")
+                        return True
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error setting album status: {e}")
+            return False
+
+    def get_album_status(self, url: str) -> bool:
+        """
+        Get whether a playlist is marked as an album.
+
+        Args:
+            url: YouTube URL
+
+        Returns:
+            bool: True if marked as album, False otherwise
+        """
+        with self._lock:
+            for item in self._queue:
+                if item.url == url:
+                    return item.is_album
             return False

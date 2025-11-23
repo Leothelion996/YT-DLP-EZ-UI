@@ -5,12 +5,14 @@ Post-tagging verification dialog allowing users to rename files to match metadat
 
 import logging
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Set
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QWidget, QCheckBox, QMessageBox
 )
 from PyQt6.QtCore import Qt
+
+from .manual_metadata_dialog import ManualMetadataDialog  # v4.0
 
 try:
     from mutagen.easyid3 import EasyID3
@@ -39,6 +41,10 @@ class FileRenameDialog(QDialog):
         self.logger = logging.getLogger(__name__)
         self.tagged_files = tagged_files
         self.checkboxes = []  # Store checkbox references
+
+        # v4.0: Track manually edited files and locked checkboxes
+        self._manually_edited_files: Dict[str, Dict] = {}  # file_path -> {'title': str, 'artist': str}
+        self._locked_checkboxes: Set[QCheckBox] = set()  # Checkboxes that are locked
 
         self._init_ui()
         self.setModal(True)  # Block interaction with parent until dismissed
@@ -108,6 +114,11 @@ class FileRenameDialog(QDialog):
             # Store file data with checkbox
             checkbox.setProperty('file_data', file_data)
             checkbox.setProperty('new_filename', new_filename)
+
+            # v4.0: Connect checkbox state change to handle manual metadata entry
+            checkbox.stateChanged.connect(
+                lambda state, cb=checkbox: self._on_checkbox_state_changed(cb)
+            )
 
             checkbox_layout.addWidget(checkbox)
             self.checkboxes.append(checkbox)
@@ -187,40 +198,104 @@ class FileRenameDialog(QDialog):
     def _on_toggle_clicked(self):
         """Handle Select All / Clear All button click."""
         # Check if any checkbox is currently unchecked
-        any_unchecked = any(not cb.isChecked() for cb in self.checkboxes)
+        any_unchecked = any(not cb.isChecked() for cb in self.checkboxes if cb not in self._locked_checkboxes)
 
         if any_unchecked:
-            # Select all
+            # Select all (skip locked checkboxes)
             for cb in self.checkboxes:
-                cb.setChecked(True)
+                if cb not in self._locked_checkboxes:
+                    cb.setChecked(True)
             self.toggle_button.setText("Clear All")
             self.logger.info("Selected all files for renaming")
         else:
-            # Clear all
+            # Clear all (skip locked checkboxes)
             for cb in self.checkboxes:
-                cb.setChecked(False)
+                if cb not in self._locked_checkboxes:
+                    cb.setChecked(False)
             self.toggle_button.setText("Select All")
             self.logger.info("Cleared all file selections")
 
+    def _on_checkbox_state_changed(self, checkbox: QCheckBox):
+        """
+        Handle checkbox state change (v4.0).
+        When user unchecks a checkbox, show manual metadata entry dialog.
+
+        Args:
+            checkbox: The checkbox that changed state
+        """
+        # If checkbox is locked, block state change and keep it unchecked
+        if checkbox in self._locked_checkboxes:
+            checkbox.blockSignals(True)
+            checkbox.setChecked(False)  # Force to unchecked
+            checkbox.blockSignals(False)
+            return
+
+        # If user is UN-checking the checkbox (checked -> unchecked)
+        if not checkbox.isChecked():
+            file_data = checkbox.property('file_data')
+            file_path = file_data['path']
+
+            # Show manual metadata dialog
+            dialog = ManualMetadataDialog(file_path.name, parent=self)
+            result = dialog.exec()
+
+            if result == QDialog.DialogCode.Accepted:
+                # User pressed "Done" with valid data
+                manual_data = dialog.get_metadata()
+
+                # Store manual metadata
+                self._manually_edited_files[str(file_path)] = manual_data
+
+                # Lock this checkbox
+                self._locked_checkboxes.add(checkbox)
+
+                # Visual indication: gray out and disable
+                checkbox.setEnabled(False)
+                checkbox.setStyleSheet("""
+                    QCheckBox {
+                        font-family: 'Consolas', 'Courier New', monospace;
+                        padding: 4px;
+                        font-size: 11px;
+                        color: #888888;
+                    }
+                """)
+
+                self.logger.info(f"File manually edited and locked: {file_path.name}")
+            else:
+                # User pressed "Cancel"
+                # Checkbox remains unchecked, can be toggled again
+                # Do nothing - user can select/deselect again later
+                self.logger.info(f"Manual metadata entry cancelled for: {file_path.name}")
+
     def _on_ok_clicked(self):
-        """Handle OK button - perform file renaming and metadata removal for unchecked files."""
-        # Collect selected files for renaming and unchecked files for metadata removal
+        """Handle OK button - perform file renaming and metadata removal for unchecked files (v4.0: + manual edits)."""
+        # Collect selected files for renaming, unchecked files for metadata removal, and manually edited files
         files_to_rename = []
         files_to_remove_metadata = []
+        manually_edited_files = []
 
         for checkbox in self.checkboxes:
             file_data = checkbox.property('file_data')
-            if checkbox.isChecked():
+            file_path = file_data['path']
+
+            # Check if this file was manually edited
+            if str(file_path) in self._manually_edited_files:
+                # v4.0: File is manually edited
+                manually_edited_files.append(file_path)
+            elif checkbox.isChecked():
+                # File is checked - rename using fingerprinted metadata
                 new_filename = checkbox.property('new_filename')
-                files_to_rename.append((file_data['path'], new_filename))
+                files_to_rename.append((file_path, new_filename))
             else:
-                # File is unchecked - user wants to remove metadata
-                files_to_remove_metadata.append(file_data['path'])
+                # File is unchecked and NOT manually edited - remove metadata
+                files_to_remove_metadata.append(file_path)
 
         # Build confirmation message
         confirm_parts = []
         if files_to_rename:
-            confirm_parts.append(f"Rename {len(files_to_rename)} file(s)")
+            confirm_parts.append(f"Rename {len(files_to_rename)} file(s) using fingerprinted metadata")
+        if manually_edited_files:
+            confirm_parts.append(f"Rename {len(manually_edited_files)} file(s) using manual metadata")
         if files_to_remove_metadata:
             confirm_parts.append(f"Remove metadata from {len(files_to_remove_metadata)} file(s)")
 
@@ -269,6 +344,19 @@ class FileRenameDialog(QDialog):
                 errors.append(f"{old_path.name}: {str(e)}")
                 error_count += 1
 
+        # v4.0: Process manually edited files
+        manual_success_count = 0
+        for file_path in manually_edited_files:
+            try:
+                manual_data = self._manually_edited_files[str(file_path)]
+                self._apply_manual_metadata(file_path, manual_data)
+                self.logger.info(f"Applied manual metadata to: {file_path.name}")
+                manual_success_count += 1
+            except Exception as e:
+                self.logger.error(f"Failed to apply manual metadata to {file_path.name}: {e}")
+                errors.append(f"{file_path.name}: Failed to apply manual metadata - {str(e)}")
+                error_count += 1
+
         # Remove metadata from unchecked files
         metadata_removed_count = 0
         for file_path in files_to_remove_metadata:
@@ -286,6 +374,8 @@ class FileRenameDialog(QDialog):
             result_parts = []
             if success_count > 0:
                 result_parts.append(f"Successfully renamed {success_count} file(s)")
+            if manual_success_count > 0:
+                result_parts.append(f"Applied manual metadata to {manual_success_count} file(s)")
             if metadata_removed_count > 0:
                 result_parts.append(f"Removed metadata from {metadata_removed_count} file(s)")
 
@@ -300,6 +390,8 @@ class FileRenameDialog(QDialog):
             error_msg = ""
             if success_count > 0:
                 error_msg += f"Renamed {success_count} file(s) successfully.\n"
+            if manual_success_count > 0:
+                error_msg += f"Applied manual metadata to {manual_success_count} file(s).\n"
             if metadata_removed_count > 0:
                 error_msg += f"Removed metadata from {metadata_removed_count} file(s).\n"
             error_msg += f"\n{error_count} operation(s) failed:\n"
@@ -313,9 +405,76 @@ class FileRenameDialog(QDialog):
                 error_msg
             )
 
-            if success_count > 0 or metadata_removed_count > 0:
+            if success_count > 0 or manual_success_count > 0 or metadata_removed_count > 0:
                 self.accept()  # Close if at least some succeeded
             # Otherwise stay open so user can retry
+
+    def _apply_manual_metadata(self, file_path: Path, manual_data: Dict) -> None:
+        """
+        Apply manually entered metadata to a file and rename it (v4.0).
+
+        Args:
+            file_path: Path to the audio file
+            manual_data: Dictionary with 'title' and 'artist' keys
+
+        Raises:
+            Exception: If metadata application or renaming fails
+        """
+        if not MUTAGEN_AVAILABLE:
+            raise Exception("Mutagen library not available")
+
+        try:
+            title = manual_data.get('title', '').strip()
+            artist = manual_data.get('artist', '').strip()
+
+            # Load the file for metadata writing (create tags if they don't exist)
+            try:
+                audio = EasyID3(str(file_path))
+            except Exception:
+                # File has no ID3 tags, create them
+                audio_file = ID3()
+                audio_file.save(str(file_path))
+                audio = EasyID3(str(file_path))
+
+            # Write metadata
+            if title:
+                audio['title'] = title
+            if artist:
+                audio['artist'] = artist
+
+            audio.save()
+
+            # Generate new filename: Always use title as the filename
+            # Title is the primary identifier - filename should match title 1-to-1
+            if title:
+                new_name = f"{title}{file_path.suffix}"
+            elif artist:
+                # Fallback: if only artist provided, use artist as filename
+                new_name = f"{artist}{file_path.suffix}"
+            else:
+                # Should not happen due to validation, but handle gracefully
+                self.logger.warning(f"No title or artist provided for {file_path.name}")
+                return
+
+            # Sanitize filename
+            invalid_chars = ['<', '>', ':', '"', '/', '\\', '|', '?', '*']
+            for char in invalid_chars:
+                new_name = new_name.replace(char, '-')
+
+            # Rename file
+            new_path = file_path.parent / new_name
+
+            # Check if target exists
+            if new_path.exists() and new_path != file_path:
+                raise Exception(f"Target file already exists: {new_name}")
+
+            file_path.rename(new_path)
+
+            self.logger.info(f"Applied manual metadata and renamed: {file_path.name} → {new_name}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to apply manual metadata: {e}")
+            raise
 
     def _remove_metadata(self, file_path: Path) -> None:
         """

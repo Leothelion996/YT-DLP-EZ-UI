@@ -7,12 +7,13 @@ import logging
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QGroupBox, QMenu
+    QPushButton, QGroupBox, QMenu, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QCursor, QColor, QBrush
 
 from core.queue_manager import QueueManager
+from config.settings import SettingsManager
 
 
 class LinkListWidget(QWidget):
@@ -23,18 +24,20 @@ class LinkListWidget(QWidget):
 
     item_removed = pyqtSignal(int)  # Emits index of removed item
 
-    def __init__(self, queue_manager: QueueManager, parent=None):
+    def __init__(self, queue_manager: QueueManager, settings: SettingsManager, parent=None):
         """
         Initialize the link list widget.
 
         Args:
             queue_manager: Queue manager instance
+            settings: Settings manager instance
             parent: Parent widget
         """
         super().__init__(parent)
 
         self.logger = logging.getLogger(__name__)
         self.queue_manager = queue_manager
+        self.settings = settings
 
         self._init_ui()
         self._connect_signals()
@@ -73,6 +76,19 @@ class LinkListWidget(QWidget):
         self.list_widget.setMinimumHeight(150)
         # Disable user selection - highlighting is automatic only
         self.list_widget.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        # Remove any borders that might obstruct text
+        # User Changed padding and it should not be changed from 0px.
+        self.list_widget.setStyleSheet("""
+            QListWidget {
+                border: none;
+                outline: none;
+            }
+            QListWidget::item {
+                border: none;
+                padding: 0px;
+                margin: 0px;
+            }
+        """)
         layout.addWidget(self.list_widget)
 
     def _connect_signals(self):
@@ -93,15 +109,105 @@ class LinkListWidget(QWidget):
 
         # Add items to list
         for item in items:
-            display_text = self._format_item_text(item)
-            list_item = QListWidgetItem(display_text)
+            list_item = QListWidgetItem()
             list_item.setData(Qt.ItemDataRole.UserRole, item.url)
             self.list_widget.addItem(list_item)
+
+            # Create custom widget for the item
+            item_widget = self._create_item_widget(item)
+            list_item.setSizeHint(item_widget.sizeHint())
+            self.list_widget.setItemWidget(list_item, item_widget)
 
         # Enable/disable clear button
         self.clear_button.setEnabled(count > 0)
 
         self.logger.info(f"List refreshed with {count} items")
+
+    def _create_item_widget(self, item) -> QWidget:
+        """
+        Create a custom widget for a queue item.
+        Playlists get an 'Album?' checkbox, videos just show text.
+        Checkbox is only shown for playlists when file format is 'audio'.
+
+        Args:
+            item: QueueItem instance
+
+        Returns:
+            QWidget: Custom widget for the item
+        """
+        widget = QWidget()
+        widget.setStyleSheet("""
+            QWidget {
+                background-color: transparent;
+                border: none;
+            }
+        """)
+
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(5, 2, 5, 2)
+        layout.setSpacing(10)
+
+        # Format the display text
+        item_type = "[Playlist]" if item.is_playlist else "[Video]"
+        text_label = QLabel(f"{item_type} {item.title}")
+        text_label.setStyleSheet("color: #000000; background-color: transparent; border: none;")
+        layout.addWidget(text_label)
+
+        # Add stretch to push checkbox to the right
+        layout.addStretch()
+
+        # Add "Album?" checkbox only for playlists when file format is 'audio'
+        file_format = self.settings.get("file_format", "video")
+        if item.is_playlist and file_format == "audio":
+            # Checkbox WITHOUT text
+            album_checkbox = QCheckBox()
+            album_checkbox.setChecked(item.is_album)
+            album_checkbox.setToolTip("Mark this playlist as an album to normalize metadata")
+            album_checkbox.setStyleSheet("""
+                QCheckBox::indicator {
+                    width: 18px;
+                    height: 18px;
+                    border: 2px solid #000000;
+                    background-color: #FFFFFF;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #4CAF50;
+                    border: 2px solid #000000;
+                    image: none;
+                }
+                QCheckBox::indicator:unchecked {
+                    background-color: #FFFFFF;
+                    border: 2px solid #000000;
+                }
+                QCheckBox::indicator:hover {
+                    border: 2px solid #333333;
+                }
+            """)
+
+            # Connect checkbox to update queue manager
+            album_checkbox.stateChanged.connect(
+                lambda state, url=item.url: self._on_album_checkbox_changed(url, state == 2)
+            )
+
+            layout.addWidget(album_checkbox)
+
+            # Separate "Album?" label to the right of checkbox
+            album_label = QLabel("Album?")
+            album_label.setStyleSheet("color: #000000; background-color: transparent; border: none;")
+            layout.addWidget(album_label)
+
+        return widget
+
+    def _on_album_checkbox_changed(self, url: str, is_checked: bool):
+        """
+        Handle album checkbox state change.
+
+        Args:
+            url: URL of the queue item
+            is_checked: New checkbox state
+        """
+        self.queue_manager.set_album_status(url, is_checked)
+        self.logger.info(f"Album status for {url}: {is_checked}")
 
     def _format_item_text(self, item) -> str:
         """
@@ -198,14 +304,46 @@ class LinkListWidget(QWidget):
             item_url = item.data(Qt.ItemDataRole.UserRole)
 
             if item_url == url:
-                # Set highlight colors
-                item.setBackground(QBrush(QColor("#cce8ff")))  # Light blue background
-                item.setForeground(QBrush(QColor("#000000")))  # Black text
+                # Get the custom widget
+                widget = self.list_widget.itemWidget(item)
+                if widget:
+                    # Set highlight background on the widget
+                    widget.setStyleSheet("""
+                        QWidget {
+                            background-color: #cce8ff;
+                            border: none;
+                        }
+                    """)
 
-                # Make text bold
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
+                    # Find the QLabel and make it bold with proper text color
+                    for child in widget.findChildren(QLabel):
+                        child.setStyleSheet("color: #000000; background-color: transparent; border: none;")
+                        font = child.font()
+                        font.setBold(True)
+                        child.setFont(font)
+
+                    # Find the QCheckBox and maintain its styling
+                    for child in widget.findChildren(QCheckBox):
+                        child.setStyleSheet("""
+                            QCheckBox::indicator {
+                                width: 18px;
+                                height: 18px;
+                                border: 2px solid #000000;
+                                background-color: #FFFFFF;
+                            }
+                            QCheckBox::indicator:checked {
+                                background-color: #4CAF50;
+                                border: 2px solid #000000;
+                                image: none;
+                            }
+                            QCheckBox::indicator:unchecked {
+                                background-color: #FFFFFF;
+                                border: 2px solid #000000;
+                            }
+                            QCheckBox::indicator:hover {
+                                border: 2px solid #333333;
+                            }
+                        """)
 
                 self.logger.info(f"Highlighted URL: {url}")
                 break
@@ -217,11 +355,43 @@ class LinkListWidget(QWidget):
         for i in range(self.list_widget.count()):
             item = self.list_widget.item(i)
 
-            # Reset to default colors
-            item.setBackground(QBrush(QColor("#ffffff")))  # White background
-            item.setForeground(QBrush(QColor("#000000")))  # Black text
+            # Get the custom widget
+            widget = self.list_widget.itemWidget(item)
+            if widget:
+                # Reset background
+                widget.setStyleSheet("""
+                    QWidget {
+                        background-color: transparent;
+                        border: none;
+                    }
+                """)
 
-            # Reset font to normal
-            font = item.font()
-            font.setBold(False)
-            item.setFont(font)
+                # Reset font and color to normal
+                for child in widget.findChildren(QLabel):
+                    child.setStyleSheet("color: #000000; background-color: transparent; border: none;")
+                    font = child.font()
+                    font.setBold(False)
+                    child.setFont(font)
+
+                # Reset checkbox styling
+                for child in widget.findChildren(QCheckBox):
+                    child.setStyleSheet("""
+                        QCheckBox::indicator {
+                            width: 18px;
+                            height: 18px;
+                            border: 2px solid #000000;
+                            background-color: #FFFFFF;
+                        }
+                        QCheckBox::indicator:checked {
+                            background-color: #4CAF50;
+                            border: 2px solid #000000;
+                            image: none;
+                        }
+                        QCheckBox::indicator:unchecked {
+                            background-color: #FFFFFF;
+                            border: 2px solid #000000;
+                        }
+                        QCheckBox::indicator:hover {
+                            border: 2px solid #333333;
+                        }
+                    """)

@@ -6,11 +6,18 @@ Wrapper around yt-dlp for downloading YouTube videos with progress tracking.
 import logging
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Optional, Callable, Any
 from threading import Thread, Lock, Event
 import yt_dlp
 from utils.file_utils import FileUtils
+
+
+class DownloadCancelled(Exception):
+    """Exception raised to immediately abort yt-dlp downloads."""
+    pass
 
 
 class YtDlpLogger:
@@ -57,6 +64,7 @@ class DownloadManager:
         """Initialize the download manager."""
         self.logger = logging.getLogger(__name__)
         self._active_downloads: Dict[str, bool] = {}
+        self._download_threads: Dict[str, Thread] = {}  # Track download threads
         self._lock = Lock()
         self._cancel_event = Event()  # Thread-safe cancellation flag
 
@@ -135,7 +143,9 @@ class DownloadManager:
             # Create folder per video/playlist: output_dir/FolderName/filename.ext
             from utils.file_utils import FileUtils
             safe_folder = FileUtils.get_safe_filename(folder_name)
-            output_template = os.path.join(output_dir, safe_folder, '%(title)s.%(ext)s')
+            # Get unique folder name to avoid overwriting existing albums
+            unique_folder = FileUtils.get_unique_folder_name(output_dir, safe_folder)
+            output_template = os.path.join(output_dir, unique_folder, '%(title)s.%(ext)s')
         else:
             # Fallback to flat structure with auto folder creation based on title
             output_template = os.path.join(output_dir, '%(title)s', '%(title)s.%(ext)s')
@@ -180,8 +190,14 @@ class DownloadManager:
 
                 opts['format'] = f'bestvideo[height<={height}]+bestaudio/best[height<={height}]'
 
-            # Merge to mp4
+            # Merge to mp4 and convert audio to AAC for Windows compatibility
             opts['merge_output_format'] = 'mp4'
+            opts['postprocessors'] = [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }]
+            # Force audio re-encoding to AAC (fixes Opus playback issues on Windows)
+            opts['postprocessor_args'] = ['-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k']
 
         return opts
 
@@ -255,10 +271,9 @@ class DownloadManager:
 
             # Wrap progress callback to check for cancellation
             def cancellable_progress_callback(progress_dict):
-                # Check cancellation flag
+                # Check cancellation flag - raise DownloadCancelled to abort yt-dlp immediately
                 if self.is_cancelled():
-                    self.logger.warning(f"Download cancelled by user: {url}")
-                    raise Exception("Download cancelled by user")
+                    raise DownloadCancelled("User requested cancellation")
 
                 # Call original callback if provided
                 if progress_callback:
@@ -281,6 +296,11 @@ class DownloadManager:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 self.logger.info(f"Starting download: {url}")
                 ydl.download([url])
+
+                # Final check after download loop completes
+                if self.is_cancelled():
+                    raise DownloadCancelled("User requested cancellation")
+
                 self.logger.info(f"Download completed: {url}")
 
                 # Mark as completed
@@ -298,14 +318,21 @@ class DownloadManager:
 
                 return True
 
+        except DownloadCancelled:
+            # Handle cancellation cleanly without error logging
+            self.logger.info(f"Download cancelled by user: {url}")
+
+            with self._lock:
+                self._active_downloads[url] = False
+
+            if error_callback:
+                error_callback("Download cancelled by user")
+
+            return False
+
         except Exception as e:
             error_msg = f"Download failed for '{url}': {str(e)}"
-
-            # Different logging for cancellation vs errors
-            if "cancelled by user" in str(e).lower():
-                self.logger.warning(error_msg)
-            else:
-                self.logger.error(error_msg)
+            self.logger.error(error_msg)
 
             with self._lock:
                 self._active_downloads[url] = False

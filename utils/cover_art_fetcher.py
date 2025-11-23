@@ -9,6 +9,7 @@ from typing import Optional
 import requests
 from mutagen.id3 import ID3, APIC
 from mutagen import File as MutagenFile
+import time
 
 
 class CoverArtFetcher:
@@ -22,10 +23,12 @@ class CoverArtFetcher:
         self.logger = logging.getLogger(__name__)
         self.cover_art_api_base = "https://coverartarchive.org/release-group"
         self.timeout = 10  # seconds
+        self.max_retries = 2  # Retry on connection failures
+        self.retry_delay = 1.5  # Seconds between retries
 
     def fetch_cover_art(self, release_group_id: str) -> Optional[bytes]:
         """
-        Fetch album artwork from MusicBrainz Cover Art Archive.
+        Fetch album artwork from MusicBrainz Cover Art Archive with retry logic.
 
         Args:
             release_group_id: MusicBrainz Release Group ID (RGID)
@@ -40,28 +43,61 @@ class CoverArtFetcher:
         url = f"{self.cover_art_api_base}/{release_group_id}/front"
         self.logger.info(f"Fetching cover art from: {url}")
 
-        try:
-            response = requests.get(url, timeout=self.timeout)
+        # Retry loop for connection failures
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = requests.get(
+                    url,
+                    timeout=self.timeout,
+                    headers={'User-Agent': 'YT-DLP-EZ-UI/4.0'}  # Identify ourselves
+                )
 
-            if response.status_code == 200:
-                self.logger.info(f"Cover art fetched successfully ({len(response.content)} bytes)")
-                return response.content
-            elif response.status_code == 404:
-                self.logger.warning(f"No cover art found for release group {release_group_id}")
-                return None
-            else:
-                self.logger.error(f"Cover art fetch failed with status {response.status_code}")
+                if response.status_code == 200:
+                    self.logger.info(f"Cover art fetched successfully ({len(response.content)} bytes)")
+                    return response.content
+                elif response.status_code == 404:
+                    self.logger.warning(f"No cover art found for release group {release_group_id}")
+                    return None
+                elif response.status_code == 503:
+                    # Service unavailable - retry
+                    if attempt < self.max_retries:
+                        self.logger.warning(f"Service unavailable, retrying in {self.retry_delay}s (attempt {attempt + 1}/{self.max_retries})")
+                        time.sleep(self.retry_delay)
+                        continue
+                    else:
+                        self.logger.error("Cover art service unavailable after retries")
+                        return None
+                else:
+                    self.logger.error(f"Cover art fetch failed with status {response.status_code}")
+                    return None
+
+            except requests.Timeout:
+                if attempt < self.max_retries:
+                    self.logger.warning(f"Timeout, retrying in {self.retry_delay}s (attempt {attempt + 1}/{self.max_retries})")
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    self.logger.error(f"Cover art fetch timed out after {self.max_retries} retries")
+                    return None
+
+            except (requests.ConnectionError, ConnectionResetError) as e:
+                if attempt < self.max_retries:
+                    self.logger.warning(f"Connection failed, retrying in {self.retry_delay}s (attempt {attempt + 1}/{self.max_retries})")
+                    time.sleep(self.retry_delay)
+                    continue
+                else:
+                    self.logger.error(f"Cover art fetch failed after {self.max_retries} retries: Connection error")
+                    return None
+
+            except requests.RequestException as e:
+                self.logger.error(f"Cover art fetch failed: {e}")
                 return None
 
-        except requests.Timeout:
-            self.logger.error(f"Cover art fetch timed out after {self.timeout} seconds")
-            return None
-        except requests.RequestException as e:
-            self.logger.error(f"Cover art fetch failed: {e}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Unexpected error fetching cover art: {e}")
-            return None
+            except Exception as e:
+                self.logger.error(f"Unexpected error fetching cover art: {e}")
+                return None
+
+        return None
 
     def save_cover_jpg(self, image_bytes: bytes, directory: Path) -> Optional[Path]:
         """

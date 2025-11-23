@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QStatusBar, QMessageBox
+    QLabel, QPushButton, QStatusBar, QMessageBox, QDialog
 )
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon
@@ -29,12 +29,16 @@ from .widgets.progress_widget import ProgressWidget
 from .widgets.log_viewer import LogViewer
 from .widgets.beets_options import BeetsOptionsWidget
 from .widgets.file_rename_dialog import FileRenameDialog  # v3.0
+from .widgets.folder_drop_widget import FolderDropWidget  # v4.0
+from .widgets.folder_processing_options_dialog import FolderProcessingOptionsDialog  # v4.0
 
 from core.downloader import DownloadManager
 from core.queue_manager import QueueManager
 from core.beets_manager import BeetsManager
 from core.metadata import MetadataHandler
 from core.acoustid_tagger import AcoustIDTagger
+from core.album_analyzer import AlbumAnalyzer
+from core.folder_processor import FolderProcessor  # v4.0
 from utils.track_numberer import TrackNumberer
 
 
@@ -65,6 +69,8 @@ class MainWindow(QMainWindow):
         self.queue_manager = QueueManager()
         self.beets_manager = BeetsManager()
         self.metadata_handler = MetadataHandler()
+        self.album_analyzer = AlbumAnalyzer()
+        self.folder_processor = FolderProcessor()  # v4.0
 
         # Track downloaded files for post-processing
         self._downloaded_files = []
@@ -81,6 +87,7 @@ class MainWindow(QMainWindow):
         self._last_logged_playlist_video = 0  # Track last logged video to avoid spam
         self._download_session_folders = []  # Track folders created during download session (v3.0)
         self._all_processes_complete = False  # Track if downloads and fingerprinting are fully complete
+        self._current_url_is_album = False  # Track if current download is marked as album (v4.0)
 
         self._init_ui()
         self._connect_signals()
@@ -128,8 +135,12 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.link_input)
 
         # Link list/queue widget
-        self.link_list = LinkListWidget(self.queue_manager)
+        self.link_list = LinkListWidget(self.queue_manager, self.settings)
         main_layout.addWidget(self.link_list)
+
+        # v4.0: Folder drop widget for processing existing files
+        self.folder_drop_widget = FolderDropWidget()
+        main_layout.addWidget(self.folder_drop_widget)
 
         # Progress widget (hidden by default)
         self.progress_widget = ProgressWidget()
@@ -200,6 +211,13 @@ class MainWindow(QMainWindow):
 
         # Beets options widget signals
         self.beets_options_widget.beets_enabled_changed.connect(self._on_beets_enabled_changed)
+
+        # v4.0: Folder drop widget signals
+        self.folder_drop_widget.process_clicked.connect(self._on_folder_process_clicked)
+
+        # v4.0: Folder processor signals
+        self.folder_processor.processing_complete_signal.connect(self._on_folder_processing_complete_safe)
+        self.folder_processor.processing_progress_signal.connect(self._on_folder_processing_progress_safe)
 
         # Set initial beets options visibility based on current format
         current_format = self.options_widget.get_file_format()
@@ -353,6 +371,11 @@ class MainWindow(QMainWindow):
 
         url, output_dir, file_format, quality = self._current_downloads[self._download_index]
 
+        # v4.0: Check if this URL is marked as an album
+        self._current_url_is_album = self.queue_manager.get_album_status(url)
+        if self._current_url_is_album:
+            self.logger.info(f"URL marked as album: {url}")
+
         # Update progress signal
         self.download_progress_signal.emit(
             self._download_index + 1,
@@ -467,6 +490,9 @@ class MainWindow(QMainWindow):
         # Show/hide beets options based on format (only show for audio)
         self.beets_options_widget.set_format_visibility(file_format)
 
+        # Refresh link list to show/hide album checkboxes based on format
+        self.link_list.refresh()
+
     def _on_beets_enabled_changed(self, enabled: bool):
         """
         Handle beets tagging enable/disable.
@@ -533,13 +559,27 @@ class MainWindow(QMainWindow):
                     {
                         'path': Path(r['file']),
                         'title': r.get('title', 'UNKNOWN'),
-                        'artist': r.get('artist', 'UNKNOWN')
+                        'artist': r.get('artist', 'UNKNOWN'),
+                        'album': r.get('album', 'UNKNOWN')
                     }
                     for r in results
                     if r.get('success', False)
                     and r.get('title')
                     and r.get('title') not in ['UNKNOWN', 'Unknown', '']
                 ]
+
+                # v4.0: Apply album consensus metadata if marked as album
+                if successful_files and self._current_url_is_album:
+                    self.log_viewer.append_log("\n=== Analyzing album metadata ===")
+                    consensus_album = self.album_analyzer.analyze_album_metadata(successful_files)
+
+                    if consensus_album:
+                        self.log_viewer.append_log(f"[Album] Consensus album name: '{consensus_album}'")
+                        # Apply consensus album to all files
+                        successful_files = self.album_analyzer.apply_consensus_album(successful_files, consensus_album)
+                        self.log_viewer.append_log(f"[Album] Applied consensus album to {len(successful_files)} files")
+                    else:
+                        self.log_viewer.append_log("[Album] No consensus album found")
 
                 if successful_files:
                     self.logger.info(f"Showing rename dialog for {len(successful_files)} successfully tagged files")
@@ -622,6 +662,125 @@ class MainWindow(QMainWindow):
                 self,
                 "Error",
                 f"Failed to show file rename dialog:\n\n{str(e)}"
+            )
+
+    # v4.0: Folder processing methods
+
+    def _on_folder_process_clicked(self, folder_path: Path):
+        """
+        Handle folder process button click (v4.0).
+
+        Args:
+            folder_path: Path to folder to process
+        """
+        try:
+            # Show processing options dialog
+            options_dialog = FolderProcessingOptionsDialog(parent=self)
+            result = options_dialog.exec()
+
+            if result == QDialog.DialogCode.Accepted:
+                # Get selected options
+                options = options_dialog.get_options()
+                self.logger.info(f"Processing folder with options: {options}")
+
+                # Get API key from beets manager
+                api_key = self.beets_manager.get_acoustid_key()
+                if not api_key:
+                    QMessageBox.warning(
+                        self,
+                        "API Key Missing",
+                        "AcoustID API key not configured. Please configure it in Beets Options."
+                    )
+                    return
+
+                # Start processing
+                self.log_viewer.append_log(f"\n=== Processing Folder: {folder_path.name} ===")
+                self.folder_drop_widget.set_processing(True)
+
+                # Process folder
+                self.folder_processor.process_folder(
+                    folder_path=folder_path,
+                    api_key=api_key,
+                    progress_callback=lambda msg: self.log_viewer.append_log(f"[Folder] {msg}")
+                )
+
+        except Exception as e:
+            self.logger.error(f"Error processing folder: {e}")
+            QMessageBox.critical(
+                self,
+                "Processing Error",
+                f"Failed to process folder:\n\n{str(e)}"
+            )
+            self.folder_drop_widget.set_processing(False)
+
+    def _on_folder_processing_progress_safe(self, message: str):
+        """
+        Handle folder processing progress updates (v4.0).
+
+        Args:
+            message: Progress message
+        """
+        self.log_viewer.append_log(f"[Folder] {message}")
+
+    def _on_folder_processing_complete_safe(
+        self,
+        success: bool,
+        error_msg: str,
+        results: Optional[List[Dict]]
+    ):
+        """
+        Handle folder processing completion (v4.0).
+
+        Args:
+            success: Whether processing succeeded
+            error_msg: Error message if failed
+            results: List of tagging results
+        """
+        self.folder_drop_widget.set_processing(False)
+
+        if success:
+            self.log_viewer.append_log("[Folder] Processing complete!")
+
+            # Show rename dialog if we have results
+            if results:
+                # Filter successful results
+                successful_files = [
+                    {
+                        'path': Path(r['file']),
+                        'title': r.get('title', 'UNKNOWN'),
+                        'artist': r.get('artist', 'UNKNOWN'),
+                        'album': r.get('album', 'UNKNOWN')
+                    }
+                    for r in results
+                    if r.get('success', False)
+                    and r.get('title')
+                    and r.get('title') not in ['UNKNOWN', 'Unknown', '']
+                ]
+
+                if successful_files:
+                    self.logger.info(f"Showing rename dialog for {len(successful_files)} files")
+                    self._show_rename_dialog(successful_files)
+                else:
+                    self.logger.info("No successfully tagged files to rename")
+                    QMessageBox.information(
+                        self,
+                        "No Results",
+                        "No files were successfully tagged. No metadata changes available."
+                    )
+            else:
+                self.logger.info("No results from folder processing")
+                QMessageBox.information(
+                    self,
+                    "No Results",
+                    "No results were returned from processing."
+                )
+
+        else:
+            self.log_viewer.append_log(f"[Folder] ERROR: {error_msg}")
+            QMessageBox.warning(
+                self,
+                "Processing Failed",
+                f"Folder processing encountered an error:\n\n{error_msg}"
             )
 
     # Thread-safe slot methods (called in main thread via signals)
