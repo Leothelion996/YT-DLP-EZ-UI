@@ -195,6 +195,37 @@ class FileRenameDialog(QDialog):
 
         return f"{base_name}{extension}"
 
+    def _get_unique_filename(self, file_path: Path) -> Path:
+        """
+        Generate a unique filename by appending (1), (2), etc. if file exists.
+
+        Args:
+            file_path: The desired file path that may already exist
+
+        Returns:
+            Path: Unique file path that doesn't exist
+        """
+        if not file_path.exists():
+            return file_path
+
+        # Split into stem and extension
+        stem = file_path.stem
+        extension = file_path.suffix
+        parent = file_path.parent
+
+        # Try incrementing numbers until we find a unique name
+        counter = 1
+        while True:
+            new_name = f"{stem} ({counter}){extension}"
+            new_path = parent / new_name
+            if not new_path.exists():
+                return new_path
+            counter += 1
+
+            # Safety check - don't loop forever
+            if counter > 1000:
+                raise ValueError(f"Could not find unique filename after 1000 attempts for {file_path}")
+
     def _on_toggle_clicked(self):
         """Handle Select All / Clear All button click."""
         # Check if any checkbox is currently unchecked
@@ -327,16 +358,14 @@ class FileRenameDialog(QDialog):
             try:
                 new_path = old_path.parent / new_filename
 
-                # Check if target file already exists
+                # Check if target file already exists - auto-increment if needed
                 if new_path.exists() and new_path != old_path:
-                    self.logger.warning(f"Target file already exists: {new_path}")
-                    errors.append(f"{old_path.name}: Target file already exists")
-                    error_count += 1
-                    continue
+                    new_path = self._get_unique_filename(new_path)
+                    self.logger.info(f"Target file already exists, using unique name: {new_path.name}")
 
                 # Rename file
                 old_path.rename(new_path)
-                self.logger.info(f"Renamed: {old_path.name} → {new_filename}")
+                self.logger.info(f"Renamed: {old_path.name} → {new_path.name}")
                 success_count += 1
 
             except Exception as e:
@@ -464,13 +493,14 @@ class FileRenameDialog(QDialog):
             # Rename file
             new_path = file_path.parent / new_name
 
-            # Check if target exists
+            # Check if target exists - auto-increment if needed
             if new_path.exists() and new_path != file_path:
-                raise Exception(f"Target file already exists: {new_name}")
+                new_path = self._get_unique_filename(new_path)
+                self.logger.info(f"Target file already exists, using unique name: {new_path.name}")
 
             file_path.rename(new_path)
 
-            self.logger.info(f"Applied manual metadata and renamed: {file_path.name} → {new_name}")
+            self.logger.info(f"Applied manual metadata and renamed: {file_path.name} → {new_path.name}")
 
         except Exception as e:
             self.logger.error(f"Failed to apply manual metadata: {e}")

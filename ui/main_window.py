@@ -9,28 +9,25 @@ from pathlib import Path
 from typing import Optional, List, Dict
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QPushButton, QStatusBar, QMessageBox, QDialog
+    QLabel, QPushButton, QStatusBar, QMessageBox, QDialog, QMenuBar, QMenu, QStackedWidget
 )
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject
-from PyQt6.QtGui import QIcon
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QUrl
+from PyQt6.QtGui import QIcon, QAction, QDesktopServices
 
 from config.settings import SettingsManager
 from config.constants import (
-    APP_NAME, APP_VERSION,
+    APP_NAME, APP_VERSION, APP_LOGO_PATH,
     WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT,
     WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT
 )
 from .styles import MAIN_STYLESHEET
-from .widgets.link_input import LinkInputWidget
-from .widgets.link_list import LinkListWidget
-from .widgets.options import OptionsWidget
-from .widgets.output_select import OutputSelectWidget
-from .widgets.progress_widget import ProgressWidget
-from .widgets.log_viewer import LogViewer
-from .widgets.beets_options import BeetsOptionsWidget
-from .widgets.file_rename_dialog import FileRenameDialog  # v3.0
-from .widgets.folder_drop_widget import FolderDropWidget  # v4.0
-from .widgets.folder_processing_options_dialog import FolderProcessingOptionsDialog  # v4.0
+from .widgets.header_widget import HeaderWidget  # v5.0
+from .widgets.preferences_dialog import PreferencesDialog  # v5.0
+from .widgets.csv_processor_dialog import CSVProcessorDialog  # v5.0
+from .widgets.file_rename_dialog import FileRenameDialog  # v3.0 (needed for album processing)
+from .widgets.folder_processing_options_dialog import FolderProcessingOptionsDialog  # v4.0 (needed for folder processing)
+from .widgets.folder_metadata_review_dialog import FolderMetadataReviewDialog  # v5.1 (post-AcoustID metadata review)
+from .views import DownloaderView, MetadataProcessorView  # v5.0
 
 from core.downloader import DownloadManager
 from core.queue_manager import QueueManager
@@ -89,6 +86,9 @@ class MainWindow(QMainWindow):
         self._all_processes_complete = False  # Track if downloads and fingerprinting are fully complete
         self._current_url_is_album = False  # Track if current download is marked as album (v4.0)
 
+        # View tracking (v5.0)
+        self._current_view_name = "downloader"  # Default view
+
         self._init_ui()
         self._connect_signals()
         self._restore_window_state()
@@ -102,8 +102,15 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.resize(WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
 
+        # Set window icon
+        if APP_LOGO_PATH.exists():
+            self.setWindowIcon(QIcon(str(APP_LOGO_PATH)))
+
         # Apply stylesheet
         self.setStyleSheet(MAIN_STYLESHEET)
+
+        # Initialize menu bar (v5.0)
+        self._init_menu_bar()
 
         # Create central widget and main layout
         central_widget = QWidget()
@@ -112,90 +119,139 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(12)
         main_layout.setContentsMargins(16, 16, 16, 16)
 
-        # Title
-        title_label = QLabel(f"{APP_NAME}")
-        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #0078d4;")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(title_label)
+        # Header (logo + title) - v5.0
+        header_widget = HeaderWidget()
+        main_layout.addWidget(header_widget)
 
-        # Output directory selector
-        self.output_selector = OutputSelectWidget(self.settings)
-        main_layout.addWidget(self.output_selector)
+        # Create views with QStackedWidget (v5.0)
+        self.stacked_widget = QStackedWidget()
 
-        # Options widget (format and quality)
-        self.options_widget = OptionsWidget(self.settings)
-        main_layout.addWidget(self.options_widget)
+        # Downloader view
+        self.downloader_view = DownloaderView(self.settings, self.queue_manager, self.beets_manager)
+        self.stacked_widget.addWidget(self.downloader_view)
 
-        # Beets options widget (music tagging)
-        self.beets_options_widget = BeetsOptionsWidget(self.settings, self.beets_manager)
-        main_layout.addWidget(self.beets_options_widget)
+        # Metadata processor view
+        self.metadata_view = MetadataProcessorView(self.settings)
+        self.stacked_widget.addWidget(self.metadata_view)
 
-        # Link input widget
-        self.link_input = LinkInputWidget()
-        main_layout.addWidget(self.link_input)
+        # Set default view
+        self.stacked_widget.setCurrentWidget(self.downloader_view)
 
-        # Link list/queue widget
-        self.link_list = LinkListWidget(self.queue_manager, self.settings)
-        main_layout.addWidget(self.link_list)
+        main_layout.addWidget(self.stacked_widget)
 
-        # v4.0: Folder drop widget for processing existing files
-        self.folder_drop_widget = FolderDropWidget()
-        main_layout.addWidget(self.folder_drop_widget)
-
-        # Progress widget (hidden by default)
-        self.progress_widget = ProgressWidget()
-        main_layout.addWidget(self.progress_widget)
-
-        # Log viewer widget (hidden by default)
-        self.log_viewer = LogViewer()
-        main_layout.addWidget(self.log_viewer)
-
-        # Download button and controls
-        controls_layout = QHBoxLayout()
-        controls_layout.addStretch()
-
-        self.download_button = QPushButton("Start Download")
-        self.download_button.setMinimumSize(QSize(150, 40))
-        self.download_button.setStyleSheet("""
-            QPushButton {
-                font-size: 14px;
-                font-weight: bold;
-                padding: 10px 24px;
-            }
-        """)
-        controls_layout.addWidget(self.download_button)
-
-        # Cancel button (hidden by default)
-        self.cancel_button = QPushButton("Cancel")
-        self.cancel_button.setMinimumSize(QSize(100, 40))
-        self.cancel_button.setStyleSheet("""
-            QPushButton {
-                font-size: 14px;
-                font-weight: bold;
-                padding: 10px 20px;
-                background-color: #d13438;
-            }
-            QPushButton:hover {
-                background-color: #b02a2e;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-            }
-        """)
-        self.cancel_button.hide()  # Hidden by default
-        controls_layout.addWidget(self.cancel_button)
-
-        controls_layout.addStretch()
-        main_layout.addLayout(controls_layout)
+        # Proxy widget references for backward compatibility
+        self._setup_widget_proxies()
 
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+    def _setup_widget_proxies(self):
+        """
+        Set up proxy references to widgets in downloader view for backward compatibility.
+        This allows existing code to reference widgets as if they were direct children.
+        """
+        # Proxy to downloader view widgets
+        self.output_selector = self.downloader_view.output_selector
+        self.options_widget = self.downloader_view.options_widget
+        self.beets_options_widget = self.downloader_view.beets_options_widget
+        self.link_input = self.downloader_view.link_input
+        self.link_list = self.downloader_view.link_list
+        self.progress_widget = self.downloader_view.progress_widget
+        self.log_viewer = self.downloader_view.log_viewer
+        self.download_button = self.downloader_view.download_button
+        self.cancel_button = self.downloader_view.cancel_button
+
+        # Proxy to metadata processor view widgets
+        self.folder_drop_widget = self.metadata_view.folder_drop_widget
+
+    def _switch_view(self, view_name: str):
+        """
+        Switch between application views.
+
+        Args:
+            view_name: Name of the view ("downloader" or "metadata")
+        """
+        if view_name == "downloader":
+            self.stacked_widget.setCurrentWidget(self.downloader_view)
+            self._current_view_name = "downloader"
+            self.status_bar.showMessage("YT Downloader View")
+            self.logger.info("Switched to Downloader view")
+        elif view_name == "metadata":
+            self.stacked_widget.setCurrentWidget(self.metadata_view)
+            self._current_view_name = "metadata"
+            self.status_bar.showMessage("Metadata Processor View")
+            self.logger.info("Switched to Metadata Processor view")
+        else:
+            self.logger.warning(f"Unknown view name: {view_name}")
+
+    def _init_menu_bar(self):
+        """Initialize the menu bar (v5.0)."""
+        menu_bar = self.menuBar()
+
+        # File Menu
+        file_menu = menu_bar.addMenu("&File")
+
+        # Preferences action (placeholder for now)
+        preferences_action = QAction("&Preferences", self)
+        preferences_action.setShortcut("Ctrl+,")
+        preferences_action.triggered.connect(self._on_preferences_clicked)
+        file_menu.addAction(preferences_action)
+
+        file_menu.addSeparator()
+
+        # Exit action
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut("Ctrl+Q")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # Edit Menu
+        edit_menu = menu_bar.addMenu("&Edit")
+
+        # Import CSV action (placeholder for now)
+        import_csv_action = QAction("&Import CSV Links", self)
+        import_csv_action.setShortcut("Ctrl+I")
+        import_csv_action.triggered.connect(self._on_import_csv_clicked)
+        edit_menu.addAction(import_csv_action)
+
+        # View Menu
+        view_menu = menu_bar.addMenu("&View")
+
+        # YT Downloader view (placeholder for now)
+        downloader_view_action = QAction("&YT Downloader", self)
+        downloader_view_action.setShortcut("Ctrl+1")
+        downloader_view_action.triggered.connect(self._on_downloader_view_clicked)
+        view_menu.addAction(downloader_view_action)
+
+        # Metadata Processor view (placeholder for now)
+        metadata_view_action = QAction("&Metadata Processor", self)
+        metadata_view_action.setShortcut("Ctrl+2")
+        metadata_view_action.triggered.connect(self._on_metadata_view_clicked)
+        view_menu.addAction(metadata_view_action)
+
+        # Help Menu
+        help_menu = menu_bar.addMenu("&Help")
+
+        # About action
+        about_action = QAction("&About Project", self)
+        about_action.triggered.connect(self._on_about_clicked)
+        help_menu.addAction(about_action)
+
+        # Get Help action
+        get_help_action = QAction("Get &Help", self)
+        get_help_action.triggered.connect(self._on_get_help_clicked)
+        help_menu.addAction(get_help_action)
+
+        self.logger.info("Menu bar initialized")
+
     def _connect_signals(self):
         """Connect signals and slots."""
+        # v5.0: Connect internal view signals first
+        self.downloader_view.connect_internal_signals()
+        self.metadata_view.connect_internal_signals()
+
         # Link input signals
         self.link_input.link_added.connect(self._on_link_added)
         self.link_input.batch_links_added.connect(self._on_batch_links_added)
@@ -438,9 +494,6 @@ class MainWindow(QMainWindow):
                     self._last_logged_playlist_video = 0
                     self.playlist_progress_signal.emit(f"Starting playlist download: {playlist_count} videos total")
 
-                # v3.0: Update playlist progress bar
-                self.progress_widget.set_playlist_progress(playlist_index, playlist_count)
-
                 # Check status
                 status = progress_dict.get('status', '')
 
@@ -459,13 +512,14 @@ class MainWindow(QMainWindow):
                         self._last_logged_playlist_video = playlist_index
                         msg = f"[Playlist {playlist_index}/{playlist_count}] Downloading: {video_title}"
                         self.playlist_progress_signal.emit(msg)
+                    # Update progress bar with COMPLETED count, not current index
+                    self.progress_widget.set_playlist_progress(self._playlist_videos_completed, playlist_count)
                 elif status == 'finished':
                     # NOTE: 'finished' means download finished, but FFmpeg post-processing may still be running
                     # Don't log "Completed" here - it's premature and confusing
-                    # Just update the progress bar silently
+                    # Increment completed count and update progress bar
                     self._playlist_videos_completed += 1
-                    # v3.0: Update playlist progress bar on completion too
-                    self.progress_widget.set_playlist_progress(playlist_index, playlist_count)
+                    self.progress_widget.set_playlist_progress(self._playlist_videos_completed, playlist_count)
 
         # Start async download
         self.download_manager.download_async(
@@ -693,15 +747,16 @@ class MainWindow(QMainWindow):
                     )
                     return
 
-                # Start processing
-                self.log_viewer.append_log(f"\n=== Processing Folder: {folder_path.name} ===")
+                # Start processing - v5.0: Use metadata view's progress widgets
+                self.metadata_view.log_viewer.append_log(f"\n=== Processing Folder: {folder_path.name} ===")
+                self.metadata_view.progress_widget.show_widget()
                 self.folder_drop_widget.set_processing(True)
 
                 # Process folder
                 self.folder_processor.process_folder(
                     folder_path=folder_path,
                     api_key=api_key,
-                    progress_callback=lambda msg: self.log_viewer.append_log(f"[Folder] {msg}")
+                    progress_callback=self._on_folder_processing_progress_safe
                 )
 
         except Exception as e:
@@ -715,12 +770,26 @@ class MainWindow(QMainWindow):
 
     def _on_folder_processing_progress_safe(self, message: str):
         """
-        Handle folder processing progress updates (v4.0).
+        Handle folder processing progress updates (v4.0, v5.0: Added progress bar support).
 
         Args:
-            message: Progress message
+            message: Progress message (format: "Fingerprinting {completed}/{total}: {filename}")
         """
-        self.log_viewer.append_log(f"[Folder] {message}")
+        self.metadata_view.log_viewer.append_log(f"[Folder] {message}")
+
+        # v5.0: Parse fingerprinting progress and update progress bar
+        # Message format: "Fingerprinting 1/10: filename.mp3"
+        if message.startswith("Fingerprinting "):
+            try:
+                # Extract "1/10" from "Fingerprinting 1/10: filename.mp3"
+                parts = message.split(":")
+                if len(parts) >= 2:
+                    progress_part = parts[0].replace("Fingerprinting ", "").strip()
+                    if "/" in progress_part:
+                        current, total = progress_part.split("/")
+                        self.metadata_view.progress_widget.set_fingerprint_progress(int(current), int(total))
+            except (ValueError, IndexError) as e:
+                self.logger.warning(f"Failed to parse fingerprint progress: {message}, error: {e}")
 
     def _on_folder_processing_complete_safe(
         self,
@@ -729,7 +798,7 @@ class MainWindow(QMainWindow):
         results: Optional[List[Dict]]
     ):
         """
-        Handle folder processing completion (v4.0).
+        Handle folder processing completion (v4.0, v5.1: Added metadata review dialog).
 
         Args:
             success: Whether processing succeeded
@@ -737,11 +806,13 @@ class MainWindow(QMainWindow):
             results: List of tagging results
         """
         self.folder_drop_widget.set_processing(False)
+        self.metadata_view.progress_widget.hide_widget()  # v5.0: Hide progress widget when done
 
         if success:
-            self.log_viewer.append_log("[Folder] Processing complete!")
+            self.metadata_view.log_viewer.append_log("[Folder] Processing complete!")
 
-            # Show rename dialog if we have results
+            # v5.1: Show metadata review dialog BEFORE loading metadata editor
+            # This allows users to fix inconsistencies with 2 clicks
             if results:
                 # Filter successful results
                 successful_files = [
@@ -758,10 +829,20 @@ class MainWindow(QMainWindow):
                 ]
 
                 if successful_files:
-                    self.logger.info(f"Showing rename dialog for {len(successful_files)} files")
-                    self._show_rename_dialog(successful_files)
+                    self.logger.info(f"Showing metadata review dialog for {len(successful_files)} files")
+
+                    # v5.1: Show metadata review dialog (majority voting analysis)
+                    review_dialog = FolderMetadataReviewDialog(results, parent=self)
+                    review_dialog.exec()
+
+                    if review_dialog.get_changes_applied():
+                        self.metadata_view.log_viewer.append_log("[Folder] Metadata corrections applied via review dialog")
+                        self.logger.info("User applied metadata corrections via review dialog")
+                    else:
+                        self.logger.info("User skipped metadata review dialog")
+
                 else:
-                    self.logger.info("No successfully tagged files to rename")
+                    self.logger.info("No successfully tagged files to review")
                     QMessageBox.information(
                         self,
                         "No Results",
@@ -775,8 +856,14 @@ class MainWindow(QMainWindow):
                     "No results were returned from processing."
                 )
 
+            # v5.0: Load processed folder into metadata editor (AFTER review dialog)
+            if hasattr(self.metadata_view, 'metadata_editor') and hasattr(self.folder_processor, 'current_folder'):
+                if self.folder_processor.current_folder:
+                    self.metadata_view.metadata_editor.load_folder(self.folder_processor.current_folder)
+                    self.logger.info("Loaded processed folder into metadata editor")
+
         else:
-            self.log_viewer.append_log(f"[Folder] ERROR: {error_msg}")
+            self.metadata_view.log_viewer.append_log(f"[Folder] ERROR: {error_msg}")
             QMessageBox.warning(
                 self,
                 "Processing Failed",
@@ -1185,3 +1272,70 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.logger.error(f"Error during close: {e}")
             event.accept()
+
+    # ==================== Menu Action Handlers (v5.0) ====================
+
+    def _on_preferences_clicked(self):
+        """Handle preferences menu action."""
+        self.logger.info("Preferences clicked")
+        dialog = PreferencesDialog(self)
+        dialog.exec()
+
+    def _on_import_csv_clicked(self):
+        """Handle import CSV menu action."""
+        self.logger.info("Import CSV clicked")
+        dialog = CSVProcessorDialog(self)
+        dialog.links_validated.connect(self._on_csv_links_validated)
+        dialog.exec()
+
+    def _on_csv_links_validated(self, links: List[str]):
+        """
+        Handle validated CSV links.
+
+        Args:
+            links: List of validated YouTube URLs
+        """
+        self.logger.info(f"Adding {len(links)} links from CSV to queue")
+        for url in links:
+            self.queue_manager.add_url(url)
+        self.status_bar.showMessage(f"Added {len(links)} links from CSV", 5000)
+
+    def _on_downloader_view_clicked(self):
+        """Handle downloader view menu action."""
+        self._switch_view("downloader")
+
+    def _on_metadata_view_clicked(self):
+        """Handle metadata processor view menu action."""
+        self._switch_view("metadata")
+
+    def _on_about_clicked(self):
+        """Handle about menu action."""
+        self.logger.info("About clicked")
+        about_text = (
+            f"<h2>{APP_NAME} v{APP_VERSION}</h2>"
+            "<p><b>Making metadata editing as easy as possible!</b></p>"
+            "<p>This application helps you download YouTube videos/playlists "
+            "and automatically tag your music files using acoustic fingerprinting. "
+            "Say goodbye to manual metadata editing!</p>"
+            "<p><b>Features:</b></p>"
+            "<ul>"
+            "<li>YouTube video/playlist downloads via yt-dlp</li>"
+            "<li>Automatic metadata tagging using AcoustID</li>"
+            "<li>Process existing music folders</li>"
+            "<li>Batch operations with CSV import</li>"
+            "</ul>"
+            "<p><b>Project:</b> <a href='https://github.com/Leothelion996'>https://github.com/Leothelion996</a></p>"
+            "<p>Built with NASA-level reliability principles.</p>"
+        )
+        QMessageBox.about(self, "About Project", about_text)
+
+    def _on_get_help_clicked(self):
+        """Handle get help menu action."""
+        self.logger.info("Get help clicked")
+        help_url = QUrl("https://github.com/Leothelion996/issues")
+        if not QDesktopServices.openUrl(help_url):
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Could not open browser. Please visit:\n{help_url.toString()}"
+            )

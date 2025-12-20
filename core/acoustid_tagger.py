@@ -58,19 +58,22 @@ class FingerprintLogger:
         """Setup individual logger with file handler."""
         logger = logging.getLogger(name)
         logger.setLevel(logging.DEBUG)
-        logger.handlers.clear()  # Clear any existing handlers
 
-        # File handler
-        handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
-        handler.setLevel(logging.DEBUG)
+        # v5.1 FIX: Only add handler if it doesn't exist
+        # This prevents clearing handlers that are still in use by other tagger instances
+        # (which causes crashes when processing multiple folders sequentially)
+        if not logger.handlers:
+            # File handler
+            handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+            handler.setLevel(logging.DEBUG)
 
-        # Detailed format with timestamp
-        formatter = logging.Formatter(
-            '%(asctime)s | %(levelname)-8s | %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+            # Detailed format with timestamp
+            formatter = logging.Formatter(
+                '%(asctime)s | %(levelname)-8s | %(message)s',
+                datefmt='%Y-%m-%d %H:%M:%S'
+            )
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
 
         return logger
 
@@ -323,15 +326,13 @@ class AcoustIDTagger:
             total = len(files)
             successful = 0
             failed = 0
+            completed = 0  # Track completed items for accurate progress
             results = []  # v3.0: Collect all results for rename dialog
 
             for i, file_path in enumerate(files, 1):
                 self.fp_logger.section(f"PROCESSING FILE {i}/{total}")
                 self.fp_logger.detailed(f"File: {file_path}")
                 self.fp_logger.detailed(f"Size: {file_path.stat().st_size / 1024:.2f} KB")
-
-                if progress_callback:
-                    progress_callback(f"Fingerprinting {i}/{total}: {file_path.name}")
 
                 try:
                     # Fingerprint and tag the file
@@ -357,6 +358,11 @@ class AcoustIDTagger:
                         'file': str(file_path),
                         'error': str(e)
                     })
+
+                # Update progress AFTER completing the file (not before)
+                completed += 1
+                if progress_callback:
+                    progress_callback(f"Fingerprinting {completed}/{total}: {file_path.name}")
 
             # Complete
             self.fp_logger.section("TAGGING SESSION COMPLETE")

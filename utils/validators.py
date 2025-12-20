@@ -15,10 +15,21 @@ class URLValidator:
     Supports individual videos, playlists, and various YouTube URL formats.
     """
 
+    # Class-level logger
+    _logger = None
+
+    @classmethod
+    def get_logger(cls):
+        """Get or create logger for URLValidator."""
+        if cls._logger is None:
+            import logging
+            cls._logger = logging.getLogger(__name__)
+        return cls._logger
+
     # Regex patterns for different YouTube URL formats
     YOUTUBE_REGEX = re.compile(
         r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'
-        r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
+        r'(watch\?v=|embed/|v/|live/|shorts/|.+\?v=)?([a-zA-Z0-9_-]{11})')
 
     PLAYLIST_REGEX = re.compile(
         r'[?&]list=([^&]+)'
@@ -41,7 +52,8 @@ class URLValidator:
         url = url.strip()
         try:
             result = urlparse(url)
-            return all([result.scheme, result.netloc])
+            # Only accept http and https schemes for YouTube URLs
+            return all([result.scheme in ('http', 'https'), result.netloc])
         except Exception:
             return False
 
@@ -104,14 +116,22 @@ class URLValidator:
             url: The YouTube URL
 
         Returns:
-            str or None: The video ID if found, None otherwise
+            str or None: The video ID if found and valid, None otherwise
         """
         if not URLValidator.is_youtube_url(url):
             return None
 
         match = URLValidator.YOUTUBE_REGEX.search(url)
         if match:
-            return match.group(6)
+            video_id = match.group(6)
+            # Additional validation to ensure video ID format is correct
+            if URLValidator.validate_video_id(video_id):
+                return video_id
+            else:
+                # Log rejection for debugging
+                logger = URLValidator.get_logger()
+                logger.warning(f"Rejected malformed video ID: {video_id} from URL: {url}")
+
         return None
 
     @staticmethod
@@ -132,6 +152,27 @@ class URLValidator:
         if match:
             return match.group(1)
         return None
+
+    @staticmethod
+    def validate_video_id(video_id: str) -> bool:
+        """
+        Validate a YouTube video ID format.
+
+        Args:
+            video_id: The video ID to validate
+
+        Returns:
+            bool: True if video ID is valid format
+        """
+        if not video_id or not isinstance(video_id, str):
+            return False
+
+        # YouTube video IDs are exactly 11 characters: [a-zA-Z0-9_-]
+        if len(video_id) != 11:
+            return False
+
+        # Check character validity
+        return bool(re.match(r'^[a-zA-Z0-9_-]{11}$', video_id))
 
     @staticmethod
     def normalize_url(url: str) -> str:
@@ -169,12 +210,14 @@ class URLValidator:
             text: Text containing multiple URLs
 
         Returns:
-            List[str]: List of extracted URLs
+            List[str]: List of extracted and validated URLs
         """
         if not text or not isinstance(text, str):
             return []
 
+        logger = URLValidator.get_logger()
         urls = []
+        rejected_urls = []
 
         # First, try to find all URLs using regex
         url_pattern = re.compile(
@@ -202,17 +245,38 @@ class URLValidator:
                 urls.append(text.strip())
 
         # Filter out empty strings and validate
-        urls = [u for u in urls if u and URLValidator.is_youtube_url(u)]
+        valid_urls = []
+        for u in urls:
+            if not u:
+                continue
+            # Check if it's a YouTube URL AND has a valid video ID or playlist ID
+            if URLValidator.is_youtube_url(u):
+                # Additional check: ensure we can extract valid video/playlist ID
+                video_id = URLValidator.extract_video_id(u)
+                playlist_id = URLValidator.extract_playlist_id(u)
+                if video_id or playlist_id:
+                    valid_urls.append(u)
+                else:
+                    rejected_urls.append(u)
+            else:
+                rejected_urls.append(u)
+
+        # Log rejected URLs
+        if rejected_urls:
+            logger.info(f"Rejected {len(rejected_urls)} invalid URL(s) from batch input")
+            for rejected in rejected_urls:
+                logger.debug(f"Rejected URL: {rejected}")
 
         # Remove duplicates while preserving order
         seen = set()
         unique_urls = []
-        for url in urls:
+        for url in valid_urls:
             normalized = URLValidator.normalize_url(url)
             if normalized not in seen:
                 seen.add(normalized)
                 unique_urls.append(normalized)
 
+        logger.info(f"Successfully parsed {len(unique_urls)} valid URL(s) from batch input")
         return unique_urls
 
     @staticmethod

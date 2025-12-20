@@ -7,9 +7,14 @@ import os
 from pathlib import Path
 
 # Application metadata
-APP_NAME = "YT-DLP EZ-UI"
-APP_VERSION = "1.0.0"
-APP_AUTHOR = "YT-DLP EZ-UI Team"
+APP_NAME = "BatchRipTagger YT"
+APP_VERSION = "5.0.0"
+APP_AUTHOR = "BatchRipTagger YT Team"
+
+# Application resources
+PROJECT_ROOT = Path(__file__).parent.parent
+APP_LOGO_PATH = PROJECT_ROOT / "BatchRipTagger YT UI Logo.png"
+APP_FONT_PATH = PROJECT_ROOT / "HussarEkologiczne Regular.otf"
 
 # File paths
 USER_HOME = Path.home()
@@ -82,6 +87,9 @@ WINDOW_MIN_WIDTH = 700
 WINDOW_MIN_HEIGHT = 500
 WINDOW_DEFAULT_WIDTH = 800
 WINDOW_DEFAULT_HEIGHT = 600
+
+# UI Colors
+COLOR_NEON_BLUE = "#00D4FF"
 
 # Threading constants
 MAX_CONCURRENT_DOWNLOADS = 3

@@ -87,7 +87,31 @@ class LinkInputWidget(QWidget):
         urls = self.validator.parse_batch_urls(text)
 
         if len(urls) == 0:
-            # No valid URLs found
+            # No valid URLs found - provide specific error feedback
+            from PyQt6.QtWidgets import QMessageBox
+
+            # Check if it looks like a YouTube URL but is malformed
+            if 'youtube.com' in text.lower() or 'youtu.be' in text.lower():
+                error_msg = (
+                    "Invalid YouTube URL format detected.\n\n"
+                    "Common issues:\n"
+                    "• Malformed video ID (must be exactly 11 alphanumeric characters)\n"
+                    "• Extra characters or slashes in the URL\n"
+                    "• Incomplete or corrupted URL\n\n"
+                    "Please verify the URL is complete and correctly formatted."
+                )
+            else:
+                error_msg = (
+                    "No valid YouTube URLs found in the input.\n\n"
+                    "Please enter a valid YouTube video or playlist URL."
+                )
+
+            QMessageBox.warning(
+                self,
+                "Invalid URL",
+                error_msg
+            )
+
             self.logger.warning(f"No valid URLs found in input: {text}")
             self.url_input.selectAll()
             return

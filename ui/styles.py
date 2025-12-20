@@ -3,6 +3,28 @@ UI styling for YT-DLP EZ-UI.
 Contains stylesheet definitions and theme constants for PyQt6.
 """
 
+from PyQt6.QtGui import QFontDatabase
+from pathlib import Path
+
+
+def load_custom_font(font_path: Path) -> str:
+    """
+    Load a custom font file and return the font family name.
+
+    Args:
+        font_path: Path to the font file (.ttf or .otf)
+
+    Returns:
+        Font family name if successful, empty string if failed
+    """
+    if font_path.exists():
+        font_id = QFontDatabase.addApplicationFont(str(font_path))
+        if font_id != -1:
+            families = QFontDatabase.applicationFontFamilies(font_id)
+            if families:
+                return families[0]
+    return ""
+
 # Main application stylesheet
 MAIN_STYLESHEET = """
 QMainWindow {
@@ -163,9 +185,24 @@ QMenu {
 
 QMenu::item {
     padding: 6px 20px;
+    color: #000000;
 }
 
 QMenu::item:selected {
+    background-color: #0078d4;
+    color: white;
+}
+
+QMenuBar {
+    background-color: #f0f0f0;
+}
+
+QMenuBar::item {
+    padding: 4px 10px;
+    color: #000000;
+}
+
+QMenuBar::item:selected {
     background-color: #0078d4;
     color: white;
 }
@@ -236,6 +273,7 @@ COLOR_SURFACE = "#ffffff"
 COLOR_BORDER = "#cccccc"
 COLOR_TEXT = "#333333"
 COLOR_TEXT_SECONDARY = "#666666"
+COLOR_NEON_BLUE = "#00D4FF"
 
 # Font sizes
 FONT_SIZE_SMALL = 11

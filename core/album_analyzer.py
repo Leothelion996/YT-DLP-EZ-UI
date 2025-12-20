@@ -339,3 +339,83 @@ class AlbumAnalyzer:
         self.logger.info(f"Found {len(unique_albums)} unique albums across {len(files)} files")
 
         return True, f"Valid album data: {len(unique_albums)} unique album names"
+
+    def apply_consensus_artist(self, files: List[Dict], consensus_artist: str) -> None:
+        """
+        Apply consensus artist name to ALL files in the list.
+        Writes metadata directly to files using Mutagen.
+
+        Args:
+            files: List of file dictionaries with 'path' key
+            consensus_artist: Artist name to apply
+
+        v5.1: Added for folder metadata review dialog
+        """
+        if not consensus_artist:
+            self.logger.warning("No consensus artist provided")
+            return
+
+        if not MUTAGEN_AVAILABLE:
+            self.logger.error("Mutagen not available - cannot write metadata to files")
+            return
+
+        self.logger.info(f"Applying consensus artist '{consensus_artist}' to ALL {len(files)} files")
+
+        updated_count = 0
+        failed_count = 0
+
+        for file_data in files:
+            file_path = Path(file_data['path'])
+
+            if not file_path.exists():
+                self.logger.error(f"File not found: {file_path}")
+                failed_count += 1
+                continue
+
+            try:
+                # Determine file type and use appropriate Mutagen handler
+                file_ext = file_path.suffix.lower()
+
+                if file_ext == '.mp3':
+                    audio = EasyID3(str(file_path))
+                elif file_ext in ['.m4a', '.mp4']:
+                    audio = MP4(str(file_path))
+                elif file_ext == '.flac':
+                    audio = FLAC(str(file_path))
+                elif file_ext in ['.ogg', '.opus']:
+                    audio = OggVorbis(str(file_path))
+                else:
+                    self.logger.warning(f"Unsupported file format: {file_ext}")
+                    failed_count += 1
+                    continue
+
+                # Write artist name
+                old_artist = file_data.get('artist', 'UNKNOWN')
+                if file_ext in ['.m4a', '.mp4']:
+                    audio['\xa9ART'] = [consensus_artist]  # MP4 uses different tag names
+                else:
+                    audio['artist'] = consensus_artist
+
+                # Save changes to file
+                audio.save()
+
+                # Update file_data dictionary for consistency
+                file_data['artist'] = consensus_artist
+
+                if old_artist != consensus_artist:
+                    self.logger.info(
+                        f"Updated artist for {file_path.name}: '{old_artist}' → '{consensus_artist}'"
+                    )
+                else:
+                    self.logger.info(f"Confirmed artist for {file_path.name}: '{consensus_artist}'")
+
+                updated_count += 1
+
+            except Exception as e:
+                self.logger.error(f"Failed to write metadata to {file_path.name}: {e}")
+                failed_count += 1
+
+        self.logger.info(
+            f"Successfully applied artist '{consensus_artist}' to {updated_count}/{len(files)} files "
+            f"({failed_count} failed)"
+        )

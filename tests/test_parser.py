@@ -63,15 +63,74 @@ class TestURLValidator(unittest.TestCase):
 
     def test_batch_url_parsing(self):
         """Test parsing multiple URLs from text."""
-        # Comma-separated
-        csv_text = "https://youtu.be/test1, https://youtu.be/test2, https://youtu.be/test3"
+        # Comma-separated with valid 11-char IDs
+        csv_text = "https://youtu.be/dQw4w9WgXcQ, https://youtu.be/-wtIMTCHWuI, https://youtu.be/_dQw4w9WgXc"
         urls = self.validator.parse_batch_urls(csv_text)
         self.assertEqual(len(urls), 3)
 
-        # Line-by-line
-        newline_text = "https://youtu.be/test1\nhttps://youtu.be/test2\nhttps://youtu.be/test3"
+        # Line-by-line with valid 11-char IDs
+        newline_text = "https://youtu.be/dQw4w9WgXcQ\nhttps://youtu.be/-wtIMTCHWuI\nhttps://youtu.be/_dQw4w9WgXc"
         urls = self.validator.parse_batch_urls(newline_text)
         self.assertEqual(len(urls), 3)
+
+    def test_live_stream_urls(self):
+        """Test validation and extraction from /live/ URLs."""
+        live_urls = [
+            "https://www.youtube.com/live/kqRMYFL4Zic",
+            "https://www.youtube.com/live/kqRMYFL4Zic?si=oiLRAmy93Xuuyj3Q",
+        ]
+
+        for url in live_urls:
+            with self.subTest(url=url):
+                self.assertTrue(self.validator.is_youtube_url(url))
+                video_id = self.validator.extract_video_id(url)
+                self.assertEqual(video_id, "kqRMYFL4Zic")
+
+    def test_shorts_urls(self):
+        """Test validation and extraction from /shorts/ URLs."""
+        shorts_urls = [
+            "https://www.youtube.com/shorts/abc123def45",
+            "https://youtube.com/shorts/XyZ-_123456",
+        ]
+
+        for url in shorts_urls:
+            with self.subTest(url=url):
+                self.assertTrue(self.validator.is_youtube_url(url))
+                video_id = self.validator.extract_video_id(url)
+                self.assertIsNotNone(video_id)
+                self.assertEqual(len(video_id), 11)
+
+    def test_malformed_video_ids(self):
+        """Test rejection of malformed video IDs."""
+        malformed_urls = [
+            "https://www.youtube.com/watch?v=live/kqRMYF",
+            "https://www.youtube.com/watch?v=test@123456",
+            "https://www.youtube.com/watch?v=test/123456",
+        ]
+
+        for url in malformed_urls:
+            with self.subTest(url=url):
+                # URL might pass is_youtube_url (domain check)
+                # but extract_video_id should return None
+                video_id = self.validator.extract_video_id(url)
+                self.assertIsNone(
+                    video_id,
+                    f"Should reject malformed video ID in: {url}"
+                )
+
+    def test_video_id_validation(self):
+        """Test the validate_video_id helper method."""
+        # Valid IDs
+        self.assertTrue(self.validator.validate_video_id("dQw4w9WgXcQ"))
+        self.assertTrue(self.validator.validate_video_id("-wtIMTCHWuI"))
+        self.assertTrue(self.validator.validate_video_id("_dQw4w9WgXc"))
+        self.assertTrue(self.validator.validate_video_id("kqRMYFL4Zic"))
+
+        # Invalid IDs
+        self.assertFalse(self.validator.validate_video_id("live/kqRMYF"))
+        self.assertFalse(self.validator.validate_video_id("test@123456"))
+        self.assertFalse(self.validator.validate_video_id("short"))
+        self.assertFalse(self.validator.validate_video_id("waytolong123"))
 
 
 class TestURLParser(unittest.TestCase):

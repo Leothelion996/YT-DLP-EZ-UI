@@ -29,6 +29,7 @@ class FolderProcessor(QObject):
         self.logger = logging.getLogger(__name__)
         self._lock = Lock()
         self._is_processing = False
+        self.current_folder: Optional[Path] = None  # v5.0: Track current folder for metadata editor loading
 
     def process_folder(
         self,
@@ -56,6 +57,7 @@ class FolderProcessor(QObject):
                 return
 
             self._is_processing = True
+            self.current_folder = folder_path  # v5.0: Store current folder for metadata editor
 
         # Start processing in background thread
         thread = Thread(
